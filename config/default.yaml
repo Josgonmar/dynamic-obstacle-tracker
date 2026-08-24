@@ -1,0 +1,31 @@
+topics:
+  predicted_obstacle_topic: predicted_obstacles
+  bbox_marker_topic: cluster_bounding_boxes
+  prediction_marker_topic: tracked_obstacles
+
+frame:
+  output_frame: ""
+
+clustering:
+  cluster_tolerance: 1.0
+  min_cluster_size: 20
+  max_cluster_size: 2000
+  cluster_bbox_cutoff_size: 2.0
+
+tracking:
+  use_adaptive_kf: true
+  adaptive_kf_alpha: 0.90
+  adaptive_kf_dt: 0.1
+  time_to_delete_old_obstacles: 5.0
+  velocity_threshold: 0.8
+  acceleration_threshold: 2.0
+  max_history_size: 30
+
+prediction:
+  prediction_horizon: 1.0
+  prediction_dt: 0.1
+  cutoff_length_threshold: 0.1
+  degree_for_pwp: 3
+  degree_for_poly: 5
+  min_observations_for_prediction: 5
+  max_obstacle_velocity: 2.0
