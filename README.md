@@ -1,16 +1,50 @@
 # Dynamic Obstacle Tracker
 
-Standalone ROS 2 dynamic-obstacle clustering, EKF tracking, and short-horizon trajectory prediction.
+Standalone ROS 2 dynamic-point detection, obstacle clustering, EKF tracking, and short-horizon trajectory prediction.
+
+The package provides two independent nodes:
+
+- `dynamic_point_detector_node`: deskewed point cloud to dynamic/static point clouds.
+- `dynamic_obstacle_tracker_node`: dynamic point cloud to tracked and predicted obstacles.
 
 ## Interfaces
 
-The node subscribes to `dynamic_cloud` by default and publishes:
+The detector subscribes to `deskewed_cloud` by default and publishes:
+
+- `dynamic_cloud` (`sensor_msgs/PointCloud2`)
+- `static_cloud` (`sensor_msgs/PointCloud2`, configurable)
+
+The tracker subscribes to `dynamic_cloud` and publishes:
 
 - `predicted_obstacles` (`dynamic_obstacle_tracker/msg/DynamicObstacleTrajectory`)
 - `cluster_bounding_boxes` (`visualization_msgs/MarkerArray`)
 - `tracked_obstacles` (`visualization_msgs/MarkerArray`)
 
 ## Launch
+
+Launch the complete scan-driven pipeline as two standalone processes with:
+
+```bash
+ros2 launch dynamic_obstacle_tracker dynamic_obstacle_pipeline.launch.py
+```
+
+Launch both nodes as components in one multithreaded container with intra-process communication enabled with:
+
+```bash
+ros2 launch dynamic_obstacle_tracker dynamic_obstacle_pipeline_composed.launch.py
+```
+
+The composed pipeline avoids DDS serialization for the detector-to-tracker `dynamic_cloud`. The multithreaded
+container can run the detector and tracker callbacks concurrently, while each node's default mutually-exclusive
+callback group keeps consecutive updates to that node serialized.
+
+Launch only the detector with:
+
+```bash
+ros2 launch dynamic_obstacle_tracker dynamic_point_detector.launch.py
+```
+
+Launch only the tracker with:
 
 ```bash
 ros2 launch dynamic_obstacle_tracker dynamic_obstacle_tracker.launch.py
@@ -23,12 +57,44 @@ ros2 launch dynamic_obstacle_tracker dynamic_obstacle_tracker.launch.py \
   config_file:=/path/to/params.yaml
 ```
 
-Override the input cloud topic with:
+Override the deskewed input cloud topic for the detector or complete pipeline with:
 
 ```bash
-ros2 launch dynamic_obstacle_tracker dynamic_obstacle_tracker.launch.py \
-  input_cloud_topic:=/my/dynamic_cloud
+ros2 launch dynamic_obstacle_tracker dynamic_obstacle_pipeline_composed.launch.py \
+  input_cloud_topic:=/my/deskewed_cloud
 ```
+
+## Frame contract
+
+`frame.tracking_frame` is the single coordinate frame used by the detector output, tracker state, velocities, and
+predicted trajectories. It must be a continuous fixed frame such as `odom` or a continuous `world` frame, not
+`base_link` or a sensor frame.
+
+The expected detector input is already expressed in `tracking_frame`. If its `header.frame_id` differs, the detector
+looks up `tracking_frame <- input_frame` at the point-cloud timestamp and transforms the points. A missing transform
+drops the scan; the implementation does not fall back to the latest transform.
+
+The detector looks up the configured `frame.sensor_frame`, (`os_sensor` for Ouster LiDARs for example) in `tracking_frame` at the cloud timestamp and uses its translation as the DDA ray origin. A complete timestamped TF tree is therefore required. A missing cloud-frame or sensor-frame transform drops the scan; neither lookup falls back to the latest transform.
+
+The tracker does not transform or relabel its input. It rejects dynamic clouds whose frame differs from `tracking_frame` and advances the EKF using the cloud timestamp.
+
+## Dynamic-point detector
+
+The detector stores temporal occupancy in sparse `8 x 8 x 8` voxel blocks addressed by integer block coordinates.
+This follows the voxel-block spatial hashing organization and hash constants described by [Niessner et al.](https://niessnerlab.org/papers/2013/4hashing/niessner2013hashing.pdf), while replacing the paper's TSDF/color voxel payload with occupancy and temporal dynamic-state evidence.
+
+Each scan is processed as one batch:
+
+1. Filter invalid, range-excluded, and optionally ground points.
+2. Aggregate endpoint hits and traverse observed free space with 3D DDA rays.
+3. Classify endpoints against the state that existed before the current scan.
+4. Confirm free-to-occupied transitions across scans and suppress candidates beside established static surfaces.
+5. Publish the original current-scan points belonging to confirmed dynamic voxels.
+6. Integrate free/static evidence and garbage-collect stale or distant voxel blocks.
+
+Candidate dynamic endpoints are temporarily withheld from static occupancy integration. A candidate that remains in
+the same voxel for `occupied_to_static_time` is absorbed as static, preventing indefinitely persistent false dynamic
+labels. The map is bounded by both `active_radius` and `block_ttl`.
 
 ## Attribution and disclaimer
 

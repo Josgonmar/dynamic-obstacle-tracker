@@ -1,8 +1,8 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 
 
 def generate_launch_description():
@@ -16,12 +16,22 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'config_file',
             default_value=default_config_file,
-            description='Plain YAML file loaded by the tracker config loader',
+            description='Plain YAML file shared by detector and tracker',
         ),
         DeclareLaunchArgument(
             'input_cloud_topic',
             default_value='',
-            description='Optional override for topics.dynamic_cloud_topic',
+            description='Optional override for topics.deskewed_cloud_topic',
+        ),
+        Node(
+            package='dynamic_obstacle_tracker',
+            executable='dynamic_point_detector_node',
+            name='dynamic_point_detector_node',
+            output='screen',
+            parameters=[{
+                'config_file': LaunchConfiguration('config_file'),
+                'input_cloud_topic': LaunchConfiguration('input_cloud_topic'),
+            }],
         ),
         Node(
             package='dynamic_obstacle_tracker',
@@ -30,7 +40,6 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'config_file': LaunchConfiguration('config_file'),
-                'input_cloud_topic': LaunchConfiguration('input_cloud_topic'),
             }],
         ),
     ])

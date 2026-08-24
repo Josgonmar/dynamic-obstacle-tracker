@@ -80,6 +80,8 @@ TrackingResult ObstacleTracker::update(
 {
     TrackingResult result;
 
+    deleteOldStates(current_time_sec);
+
     if (!dynamic_cloud || dynamic_cloud->empty())
         return result;
 
@@ -98,8 +100,6 @@ TrackingResult ObstacleTracker::update(
     std::vector<Eigen::Vector3d> centroids;
     std::vector<Eigen::Vector3d> bboxes;
     getCentroidsAndSizes(dynamic_cloud, cluster_indices, centroids, bboxes);
-    deleteOldStates(current_time_sec);
-
     std::vector<Cluster> clusters;
     for (size_t i = 0; i < cluster_indices.size(); ++i) {
         const Eigen::Vector3d& centroid = centroids[i];

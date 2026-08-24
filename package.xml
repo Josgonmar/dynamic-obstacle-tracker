@@ -3,7 +3,7 @@
 <package format="3">
   <name>dynamic_obstacle_tracker</name>
   <version>0.1.0</version>
-  <description>Standalone ROS 2 dynamic obstacle clustering, tracking, and prediction.</description>
+  <description>Standalone ROS 2 dynamic-point detection, obstacle tracking, and trajectory prediction.</description>
 
   <maintainer email="jmgonzalez@catec.aero">José Manuel González Marín</maintainer>
   <license>MIT</license>
@@ -17,12 +17,16 @@
   <depend>geometry_msgs</depend>
   <depend>pcl_conversions</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
   <depend>visualization_msgs</depend>
   <depend>yaml-cpp</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>

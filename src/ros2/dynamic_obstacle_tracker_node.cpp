@@ -6,22 +6,34 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <rclcpp_components/register_node_macro.hpp>
+#include <stdexcept>
 
 #include "dynamic_obstacle_tracker/common/config_loader.hpp"
 
 namespace dynamic_obstacle_tracker {
+namespace {
 
-DynamicObstacleTrackerNode::DynamicObstacleTrackerNode() : Node("dynamic_obstacle_tracker_node")
+std::string normalizeFrame(std::string frame)
+{
+    while (!frame.empty() && frame.front() == '/') frame.erase(frame.begin());
+    return frame;
+}
+
+} // namespace
+
+DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions& options) :
+        Node("dynamic_obstacle_tracker_node", options)
 {
     const std::string configured_path = declare_parameter<std::string>("config_file", "");
-    input_cloud_topic_                = declare_parameter<std::string>("input_cloud_topic", "dynamic_cloud");
+    const std::string topic_override  = declare_parameter<std::string>("input_cloud_topic", "");
 
     std::string                  config_path = configured_path;
     DynamicObstacleTrackerConfig config;
     try {
         if (config_path.empty()) {
-                config_path = ament_index_cpp::get_package_share_directory("dynamic_obstacle_tracker")
-                            + "/config/default.yaml";
+            config_path
+                    = ament_index_cpp::get_package_share_directory("dynamic_obstacle_tracker") + "/config/default.yaml";
         }
         config = ConfigLoader(config_path).load();
     } catch (const std::exception& exception) {
@@ -29,27 +41,36 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode() : Node("dynamic_obstacl
         throw;
     }
 
+    input_cloud_topic_        = topic_override.empty() ? config.dynamic_cloud_topic : topic_override;
     predicted_obstacle_topic_ = config.predicted_obstacle_topic;
     bbox_marker_topic_        = config.bbox_marker_topic;
     prediction_marker_topic_  = config.prediction_marker_topic;
-    output_frame_             = config.output_frame;
-    tracker_                  = std::make_unique<ObstacleTracker>(config.tracker_params, get_logger());
+    tracking_frame_           = normalizeFrame(config.tracking_frame);
+    if (tracking_frame_.empty())
+        throw std::invalid_argument("frame.tracking_frame must not be empty");
+
+    config.tracker_params.frame_id = tracking_frame_;
+    tracker_                       = std::make_unique<ObstacleTracker>(config.tracker_params, get_logger());
 
     RCLCPP_INFO(get_logger(), "Loaded tracker config from '%s'", config_path.c_str());
 
-    predicted_obstacle_pub_ = create_publisher<msg::DynamicObstacleTrajectory>(
-            predicted_obstacle_topic_, rclcpp::QoS(5).reliable());
+    predicted_obstacle_pub_
+            = create_publisher<msg::DynamicObstacleTrajectory>(predicted_obstacle_topic_, rclcpp::QoS(5).reliable());
     bbox_marker_pub_
             = create_publisher<visualization_msgs::msg::MarkerArray>(bbox_marker_topic_, rclcpp::SensorDataQoS());
-    prediction_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-            prediction_marker_topic_, rclcpp::SensorDataQoS());
+    prediction_marker_pub_
+            = create_publisher<visualization_msgs::msg::MarkerArray>(prediction_marker_topic_, rclcpp::SensorDataQoS());
 
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             input_cloud_topic_,
             rclcpp::SensorDataQoS(),
             std::bind(&DynamicObstacleTrackerNode::cloudCallback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(get_logger(), "Listening for dynamic points on '%s'", input_cloud_topic_.c_str());
+    RCLCPP_INFO(
+            get_logger(),
+            "Listening for dynamic points on '%s' in tracking frame '%s'",
+            input_cloud_topic_.c_str(),
+            tracking_frame_.c_str());
 }
 
 void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
@@ -62,19 +83,34 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
         return;
     }
 
-    const std::string frame_id = output_frame_.empty() ? msg->header.frame_id : output_frame_;
+    const std::string frame_id = normalizeFrame(msg->header.frame_id);
     if (frame_id.empty()) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Input dynamic point cloud has no frame_id");
+        return;
+    }
+    if (frame_id != tracking_frame_) {
         RCLCPP_WARN_THROTTLE(
-                get_logger(), *get_clock(), 5000, "Input point cloud has no frame_id and output_frame is empty");
+                get_logger(),
+                *get_clock(),
+                5000,
+                "Rejecting dynamic cloud in frame '%s'; tracker requires '%s'",
+                frame_id.c_str(),
+                tracking_frame_.c_str());
         return;
     }
 
-    tracker_->setFrameId(frame_id);
-    const auto result = tracker_->update(cloud, now().seconds());
+    const rclcpp::Time stamp(msg->header.stamp);
+    if (stamp.nanoseconds() <= 0) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Rejecting dynamic cloud with a zero timestamp");
+        return;
+    }
+    if (last_cloud_stamp_.nanoseconds() > 0 && stamp <= last_cloud_stamp_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Rejecting non-monotonic dynamic cloud");
+        return;
+    }
 
-    rclcpp::Time stamp(msg->header.stamp);
-    if (stamp.nanoseconds() == 0)
-        stamp = now();
+    const auto result = tracker_->update(cloud, stamp.seconds());
+    last_cloud_stamp_ = stamp;
 
     for (auto trajectory : result.trajectories) {
         trajectory.header.stamp = stamp;
@@ -95,3 +131,5 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
 }
 
 } // namespace dynamic_obstacle_tracker
+
+RCLCPP_COMPONENTS_REGISTER_NODE(dynamic_obstacle_tracker::DynamicObstacleTrackerNode)

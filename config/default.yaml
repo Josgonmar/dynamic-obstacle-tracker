@@ -1,31 +1,71 @@
 topics:
+  deskewed_cloud_topic: deskewed_cloud
+  dynamic_cloud_topic: dynamic_cloud
+  static_cloud_topic: static_cloud
   predicted_obstacle_topic: predicted_obstacles
   bbox_marker_topic: cluster_bounding_boxes
   prediction_marker_topic: tracked_obstacles
 
 frame:
-  output_frame: ""
+  tracking_frame: odom
+  sensor_frame: lidar_link
 
-clustering:
-  cluster_tolerance: 1.0
-  min_cluster_size: 20
-  max_cluster_size: 2000
-  cluster_bbox_cutoff_size: 2.0
+detector:
+  publish_static_cloud: true
+  tf_timeout: 0.05
 
-tracking:
-  use_adaptive_kf: true
-  adaptive_kf_alpha: 0.90
-  adaptive_kf_dt: 0.1
-  time_to_delete_old_obstacles: 5.0
-  velocity_threshold: 0.8
-  acceleration_threshold: 2.0
-  max_history_size: 30
+  preprocessing:
+    minimum_range: 0.50
+    maximum_range: 30.0
+    remove_ground: false
+    ground_height: 0.0
+    ground_clearance: 0.15
 
-prediction:
-  prediction_horizon: 1.0
-  prediction_dt: 0.1
-  cutoff_length_threshold: 0.1
-  degree_for_pwp: 3
-  degree_for_poly: 5
-  min_observations_for_prediction: 5
-  max_obstacle_velocity: 2.0
+  voxel_map:
+    voxel_size: 0.20
+    voxels_per_block: 8
+    active_radius: 40.0
+    block_ttl: 10.0
+    garbage_collection_period: 10
+
+  occupancy:
+    hit_increment: 0.40
+    miss_increment: -0.40
+    minimum_occupancy: -1.0
+    maximum_occupancy: 1.0
+    occupied_threshold: 0.60
+    free_threshold: -0.20
+
+  temporal:
+    free_confirmation_time: 0.20
+    occupied_to_static_time: 2.0
+    dynamic_persistence: 0.50
+    observation_continuity_timeout: 0.50
+    minimum_dynamic_observations: 2
+    minimum_points_per_voxel: 1
+    static_neighbor_threshold: 5
+
+tracker:
+  clustering:
+    cluster_tolerance: 1.0
+    min_cluster_size: 20
+    max_cluster_size: 2000
+    cluster_bbox_cutoff_size: 2.0
+
+  tracking:
+    use_adaptive_kf: true
+    adaptive_kf_alpha: 0.90
+    adaptive_kf_dt: 0.1
+    time_to_delete_old_obstacles: 5.0
+    velocity_threshold: 0.8
+    acceleration_threshold: 2.0
+    max_history_size: 30
+
+  prediction:
+    prediction_horizon: 1.0
+    prediction_dt: 0.1
+    cutoff_length_threshold: 0.1
+    degree_for_pwp: 3
+    degree_for_poly: 5
+    min_observations_for_prediction: 5
+    max_obstacle_velocity: 2.0

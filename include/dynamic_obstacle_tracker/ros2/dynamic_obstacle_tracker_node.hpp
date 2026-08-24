@@ -12,16 +12,17 @@ namespace dynamic_obstacle_tracker {
 class DynamicObstacleTrackerNode final : public rclcpp::Node
 {
   public:
-    DynamicObstacleTrackerNode();
+    explicit DynamicObstacleTrackerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
   private:
     void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 
-    std::string input_cloud_topic_;
-    std::string predicted_obstacle_topic_;
-    std::string bbox_marker_topic_;
-    std::string prediction_marker_topic_;
-    std::string output_frame_;
+    std::string  input_cloud_topic_;
+    std::string  predicted_obstacle_topic_;
+    std::string  bbox_marker_topic_;
+    std::string  prediction_marker_topic_;
+    std::string  tracking_frame_;
+    rclcpp::Time last_cloud_stamp_{0, 0, RCL_ROS_TIME};
 
     std::unique_ptr<ObstacleTracker>                                   tracker_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr     cloud_sub_;
