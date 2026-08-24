@@ -36,7 +36,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 add_executable(dynamic_obstacle_tracker_node
   src/ros2/dynamic_obstacle_tracker_node.cpp
   src/tracker/obstacle_tracker.cpp
-  src/common/config_loader.cpp
   utils/main.cpp
 )
 
