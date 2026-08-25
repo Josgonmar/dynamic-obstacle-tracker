@@ -1,9 +1,7 @@
 #pragma once
 
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
 #include <Eigen/Dense>
+#include <cilantro/utilities/point_cloud.hpp>
 #include <cstddef>
 #include <dynamic_obstacle_tracker/msg/dynamic_obstacle_trajectory.hpp>
 #include <dynamic_obstacle_tracker/msg/piecewise_polynomial3.hpp>
@@ -98,7 +96,7 @@ class ObstacleTracker
   public:
     explicit ObstacleTracker(const ObstacleTrackerParams& params, rclcpp::Logger logger);
 
-    TrackingResult update(const pcl::PointCloud<pcl::PointXYZ>::Ptr& dynamic_cloud, double current_time_sec);
+    TrackingResult update(const cilantro::PointCloud3f& dynamic_cloud, double current_time_sec);
 
     void setFrameId(std::string frame_id);
 

@@ -13,7 +13,7 @@ detector:
 
   preprocessing:
     minimum_range: 2.0
-    maximum_range: 15.0
+    maximum_range: 30.0
     remove_ground: true
     ground_height: 0.0
     ground_clearance: 0.15

@@ -113,18 +113,6 @@ Each scan is processed as one batch:
 7. Apply Otsu thresholding, previous-scan persistence, and current-scan nearest-neighbour dilation.
 8. Publish the original current-scan points belonging to the resulting dynamic voxels.
 
-The EDF nearest-neighbour search uses cilantro's nanoflann-backed 3D KD-tree. Current and previous occupied voxels
-take the exact zero-distance fast path and therefore do not issue a KD-tree query. The tracker uses cilantro radius
-connected components in place of PCL Euclidean clustering, preserving the configured tolerance and cluster-size
-limits. PCL remains only for the ROS `PointCloud2` conversion and point container boundary.
-
-`occupancy_sigma` represents combined point and pose uncertainty and defaults to the voxel size. The fixed transition
-matrix uses `transition_epsilon` to retain strong state self-transition probabilities. `belief_threshold` controls
-when a voxel commits to a discrete occupied/free state. The convolution, window, Otsu, and dilation parameters under
-`detector.hmm_mos` implement the second HMM-MOS stage. The first `local_window_size` scans warm up the score history
-and intentionally produce no dynamic output. `global_window_size` resets stale beliefs and, together with
-`active_radius`, bounds the hashed map.
-
 ## Attribution and disclaimer
 
 The package vendors and uses the MIT-licensed [cilantro](https://github.com/kzampog/cilantro) library for KD-tree nearest-neighbour search and connected-component point-cloud clustering. Its license is retained in `external/cilantro/LICENSE` and installed as `share/dynamic_obstacle_tracker/licenses/cilantro-LICENSE`.
@@ -234,12 +222,12 @@ The upstream implementation also records that it was ported from [`dynus/obstacl
 
 ```bibtex
 @misc{bhandari2024movingobjectsegmentationpoint,
-      title={Moving Object Segmentation in Point Cloud Data using Hidden Markov Models},
-      author={Vedant Bhandari and Jasmin James and Tyson Phillips and P. Ross McAree},
-      year={2024},
-      eprint={2410.18638},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2410.18638},
+  title={Moving Object Segmentation in Point Cloud Data using Hidden Markov Models},
+  author={Vedant Bhandari and Jasmin James and Tyson Phillips and P. Ross McAree},
+  year={2024},
+  eprint={2410.18638},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2410.18638},
 }
 ```

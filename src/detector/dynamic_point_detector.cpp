@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cmath>
-#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -19,8 +18,8 @@ double elapsedMilliseconds(const SteadyClock::time_point& start, const SteadyClo
 
 struct AcceptedPoint
 {
-    pcl::PointXYZ point;
-    VoxelIndex    voxel;
+    Eigen::Index point_index;
+    VoxelIndex   voxel;
 };
 
 TemporalVoxelMapParams makeTemporalVoxelMapParams(const DynamicPointDetectorParams& params)
@@ -50,13 +49,6 @@ void validatePreprocessingParams(const DynamicPointDetectorParams& params)
         throw std::invalid_argument("maximum_range must be finite and greater than minimum_range");
 }
 
-void finalizeCloud(pcl::PointCloud<pcl::PointXYZ>& cloud)
-{
-    cloud.width    = static_cast<std::uint32_t>(cloud.size());
-    cloud.height   = 1;
-    cloud.is_dense = true;
-}
-
 } // namespace
 
 DynamicPointDetector::DynamicPointDetector(const DynamicPointDetectorParams& params) :
@@ -67,10 +59,10 @@ DynamicPointDetector::DynamicPointDetector(const DynamicPointDetectorParams& par
 }
 
 DynamicPointDetectionResult DynamicPointDetector::update(
-        const pcl::PointCloud<pcl::PointXYZ>& cloud,
-        const Eigen::Vector3d&                sensor_origin,
-        double                                timestamp_sec,
-        bool                                  collect_static_points)
+        const cilantro::PointCloud3f& cloud,
+        const Eigen::Vector3d&        sensor_origin,
+        double                        timestamp_sec,
+        bool                          collect_static_points)
 {
     const auto total_start = SteadyClock::now();
 
@@ -90,19 +82,20 @@ DynamicPointDetectionResult DynamicPointDetector::update(
     const double minimum_range_squared = params_.minimum_range * params_.minimum_range;
     const double maximum_range_squared = params_.maximum_range * params_.maximum_range;
 
-    for (const auto& point : cloud.points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+    for (Eigen::Index point_index = 0; point_index < cloud.points.cols(); ++point_index) {
+        const Eigen::Vector3f point = cloud.points.col(point_index);
+        if (!point.allFinite())
             continue;
-        if (params_.remove_ground && point.z <= params_.ground_height + params_.ground_clearance)
+        if (params_.remove_ground && point.z() <= params_.ground_height + params_.ground_clearance)
             continue;
 
-        const Eigen::Vector3d position(point.x, point.y, point.z);
+        const Eigen::Vector3d position      = point.cast<double>();
         const double          range_squared = (position - sensor_origin).squaredNorm();
         if (range_squared < minimum_range_squared || range_squared > maximum_range_squared)
             continue;
 
         const VoxelIndex endpoint = voxel_map_.worldToVoxel(position);
-        accepted_points.push_back({point, endpoint});
+        accepted_points.push_back({point_index, endpoint});
         auto [hit, inserted] = hit_evidence.try_emplace(endpoint, VoxelHitEvidence{position, 0});
         static_cast<void>(inserted);
         ++hit->second.point_count;
@@ -114,18 +107,21 @@ DynamicPointDetectionResult DynamicPointDetector::update(
     const TemporalVoxelMapUpdateResult map_result     = voxel_map_.update(hit_evidence, sensor_origin, timestamp_sec);
     const auto                         map_update_end = SteadyClock::now();
 
-    result.dynamic_points.reserve(accepted_points.size());
+    result.dynamic_points.points.resize(3, static_cast<Eigen::Index>(accepted_points.size()));
     if (collect_static_points)
-        result.static_points.reserve(accepted_points.size());
+        result.static_points.points.resize(3, static_cast<Eigen::Index>(accepted_points.size()));
+    Eigen::Index dynamic_point_count = 0;
+    Eigen::Index static_point_count  = 0;
     for (const auto& accepted : accepted_points) {
-        if (map_result.dynamic_voxels.find(accepted.voxel) != map_result.dynamic_voxels.end())
-            result.dynamic_points.push_back(accepted.point);
-        else if (collect_static_points)
-            result.static_points.push_back(accepted.point);
+        if (map_result.dynamic_voxels.find(accepted.voxel) != map_result.dynamic_voxels.end()) {
+            result.dynamic_points.points.col(dynamic_point_count++) = cloud.points.col(accepted.point_index);
+        } else if (collect_static_points) {
+            result.static_points.points.col(static_point_count++) = cloud.points.col(accepted.point_index);
+        }
     }
-    finalizeCloud(result.dynamic_points);
+    result.dynamic_points.points.conservativeResize(Eigen::NoChange, dynamic_point_count);
     if (collect_static_points)
-        finalizeCloud(result.static_points);
+        result.static_points.points.conservativeResize(Eigen::NoChange, static_point_count);
 
     result.state_change_voxel_count = map_result.state_change_voxel_count;
     result.dynamic_voxel_count      = map_result.dynamic_voxels.size();

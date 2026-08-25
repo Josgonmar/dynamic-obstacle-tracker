@@ -1,7 +1,5 @@
 #include "dynamic_obstacle_tracker/ros2/dynamic_obstacle_tracker_node.hpp"
 
-#include <pcl_conversions/pcl_conversions.h>
-
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <exception>
 #include <functional>
@@ -10,18 +8,9 @@
 #include <stdexcept>
 
 #include "dynamic_obstacle_tracker/common/config_loader.hpp"
+#include "dynamic_obstacle_tracker/common/utils.hpp"
 
 namespace dynamic_obstacle_tracker {
-namespace {
-
-std::string normalizeFrame(std::string frame)
-{
-    while (!frame.empty() && frame.front() == '/') frame.erase(frame.begin());
-    return frame;
-}
-
-} // namespace
-
 DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions& options) :
         Node("dynamic_obstacle_tracker_node", options)
 {
@@ -41,8 +30,8 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
         throw;
     }
 
-    input_cloud_topic_        = topic_override.empty() ? config.dynamic_cloud_topic : topic_override;
-    tracking_frame_ = normalizeFrame(config.tracking_frame);
+    input_cloud_topic_ = topic_override.empty() ? config.dynamic_cloud_topic : topic_override;
+    tracking_frame_    = normalizeFrame(config.tracking_frame);
     if (tracking_frame_.empty())
         throw std::invalid_argument("frame.tracking_frame must not be empty");
 
@@ -72,14 +61,6 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
 
 void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
 {
-    auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
-    try {
-        pcl::fromROSMsg(*msg, *cloud);
-    } catch (const std::exception& exception) {
-        RCLCPP_WARN(get_logger(), "Could not convert input point cloud: %s", exception.what());
-        return;
-    }
-
     const std::string frame_id = normalizeFrame(msg->header.frame_id);
     if (frame_id.empty()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Input dynamic point cloud has no frame_id");
@@ -103,6 +84,14 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
     }
     if (last_cloud_stamp_.nanoseconds() > 0 && stamp <= last_cloud_stamp_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Rejecting non-monotonic dynamic cloud");
+        return;
+    }
+
+    cilantro::PointCloud3f cloud;
+    try {
+        cloud = pointCloud2ToCilantro(*msg);
+    } catch (const std::exception& exception) {
+        RCLCPP_WARN(get_logger(), "Could not convert tracker input cloud: %s", exception.what());
         return;
     }
 

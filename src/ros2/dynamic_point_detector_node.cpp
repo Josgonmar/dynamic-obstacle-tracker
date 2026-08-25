@@ -1,9 +1,7 @@
 #include "dynamic_obstacle_tracker/ros2/dynamic_point_detector_node.hpp"
 
-#include <pcl_conversions/pcl_conversions.h>
 #include <tf2/exceptions.h>
 
-#include <Eigen/Geometry>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <chrono>
 #include <exception>
@@ -15,6 +13,7 @@
 #include <utility>
 
 #include "dynamic_obstacle_tracker/common/config_loader.hpp"
+#include "dynamic_obstacle_tracker/common/utils.hpp"
 
 namespace dynamic_obstacle_tracker {
 namespace {
@@ -24,27 +23,6 @@ using SteadyClock = std::chrono::steady_clock;
 double elapsedMilliseconds(const SteadyClock::time_point& start, const SteadyClock::time_point& end)
 {
     return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-std::string normalizeFrame(std::string frame)
-{
-    while (!frame.empty() && frame.front() == '/') frame.erase(frame.begin());
-    return frame;
-}
-
-bool transformToEigen(
-        const geometry_msgs::msg::TransformStamped& transform,
-        Eigen::Quaterniond&                         rotation,
-        Eigen::Vector3d&                            translation)
-{
-    const auto& quaternion = transform.transform.rotation;
-    rotation               = Eigen::Quaterniond(quaternion.w, quaternion.x, quaternion.y, quaternion.z);
-    translation            = Eigen::Vector3d(
-            transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z);
-    if (!rotation.coeffs().allFinite() || !translation.allFinite() || rotation.norm() < 1e-12)
-        return false;
-    rotation.normalize();
-    return true;
 }
 
 } // namespace
@@ -125,39 +103,22 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
         return;
     }
 
-    const auto                     conversion_start = SteadyClock::now();
-    pcl::PointCloud<pcl::PointXYZ> input_cloud;
+    const auto             conversion_start = SteadyClock::now();
+    cilantro::PointCloud3f tracking_cloud;
     try {
-        pcl::fromROSMsg(*msg, input_cloud);
+        tracking_cloud = pointCloud2ToCilantro(*msg);
     } catch (const std::exception& exception) {
         RCLCPP_WARN(get_logger(), "Could not convert detector input cloud: %s", exception.what());
         return;
     }
     const auto conversion_end = SteadyClock::now();
 
-    const auto                     cloud_transform_start = SteadyClock::now();
-    pcl::PointCloud<pcl::PointXYZ> tracking_cloud;
-    if (cloud_frame == tracking_frame_) {
-        tracking_cloud = std::move(input_cloud);
-    } else {
+    const auto cloud_transform_start = SteadyClock::now();
+    if (cloud_frame != tracking_frame_) {
         try {
             const auto transform = tf_buffer_->lookupTransform(
                     tracking_frame_, cloud_frame, stamp, rclcpp::Duration::from_seconds(tf_timeout_));
-            Eigen::Quaterniond rotation;
-            Eigen::Vector3d    translation;
-            if (!transformToEigen(transform, rotation, translation)) {
-                RCLCPP_WARN(get_logger(), "Cloud transform contains invalid values");
-                return;
-            }
-
-            tracking_cloud.reserve(input_cloud.size());
-            for (const auto& point : input_cloud.points) {
-                const Eigen::Vector3d transformed = rotation * Eigen::Vector3d(point.x, point.y, point.z) + translation;
-                tracking_cloud.push_back(pcl::PointXYZ(
-                        static_cast<float>(transformed.x()),
-                        static_cast<float>(transformed.y()),
-                        static_cast<float>(transformed.z())));
-            }
+            transformPointCloud(tracking_cloud, transform.transform);
         } catch (const tf2::TransformException& exception) {
             RCLCPP_WARN_THROTTLE(
                     get_logger(),
@@ -168,6 +129,9 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
                     tracking_frame_.c_str(),
                     exception.what());
             return;
+        } catch (const std::exception& exception) {
+            RCLCPP_WARN(get_logger(), "Could not apply detector cloud transform: %s", exception.what());
+            return;
         }
     }
     const auto cloud_transform_end = SteadyClock::now();
@@ -177,10 +141,7 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
     try {
         const auto transform = tf_buffer_->lookupTransform(
                 tracking_frame_, sensor_frame_, stamp, rclcpp::Duration::from_seconds(tf_timeout_));
-        sensor_origin = Eigen::Vector3d(
-                transform.transform.translation.x,
-                transform.transform.translation.y,
-                transform.transform.translation.z);
+        sensor_origin = transformToEigen(transform.transform).translation().cast<double>();
     } catch (const tf2::TransformException& exception) {
         RCLCPP_WARN_THROTTLE(
                 get_logger(),
@@ -190,6 +151,9 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
                 sensor_frame_.c_str(),
                 tracking_frame_.c_str(),
                 exception.what());
+        return;
+    } catch (const std::exception& exception) {
+        RCLCPP_WARN(get_logger(), "Sensor transform contains invalid values: %s", exception.what());
         return;
     }
     const auto sensor_tf_end = SteadyClock::now();
@@ -207,17 +171,14 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
     const auto detector_end = SteadyClock::now();
 
     const auto ros_output_start = SteadyClock::now();
-    auto       dynamic_msg      = std::make_unique<sensor_msgs::msg::PointCloud2>();
-    pcl::toROSMsg(result.dynamic_points, *dynamic_msg);
-    dynamic_msg->header.stamp    = msg->header.stamp;
-    dynamic_msg->header.frame_id = tracking_frame_;
-    const auto output_header     = dynamic_msg->header;
+    auto       output_header    = msg->header;
+    output_header.frame_id      = tracking_frame_;
+    auto dynamic_msg            = std::make_unique<sensor_msgs::msg::PointCloud2>(
+            cilantroToPointCloud2(result.dynamic_points, output_header));
     dynamic_cloud_pub_->publish(std::move(dynamic_msg));
 
     if (collect_static_points) {
-        sensor_msgs::msg::PointCloud2 static_msg;
-        pcl::toROSMsg(result.static_points, static_msg);
-        static_msg.header = output_header;
+        auto static_msg = cilantroToPointCloud2(result.static_points, output_header);
         static_cloud_pub_->publish(static_msg);
     }
     const auto ros_output_end = SteadyClock::now();
@@ -239,7 +200,7 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
                 result.removed_block_count);
         RCLCPP_INFO(
                 get_logger(),
-                "Detector timing [ms]: callback=%.2f ros_to_pcl=%.2f cloud_tf=%.2f sensor_tf=%.2f core=%.2f "
+                "Detector timing [ms]: callback=%.2f ros_to_cilantro=%.2f cloud_tf=%.2f sensor_tf=%.2f core=%.2f "
                 "ros_output=%.2f",
                 elapsedMilliseconds(callback_start, ros_output_end),
                 elapsedMilliseconds(conversion_start, conversion_end),

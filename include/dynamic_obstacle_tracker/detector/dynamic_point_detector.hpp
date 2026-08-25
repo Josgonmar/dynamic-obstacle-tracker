@@ -1,9 +1,7 @@
 #pragma once
 
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
 #include <Eigen/Core>
+#include <cilantro/utilities/point_cloud.hpp>
 #include <cstddef>
 
 #include "dynamic_obstacle_tracker/detector/temporal_voxel_map.hpp"
@@ -43,16 +41,16 @@ struct DynamicPointDetectorTimings
 
 struct DynamicPointDetectionResult
 {
-    pcl::PointCloud<pcl::PointXYZ> dynamic_points;
-    pcl::PointCloud<pcl::PointXYZ> static_points;
-    std::size_t                    input_point_count        = 0;
-    std::size_t                    accepted_point_count     = 0;
-    std::size_t                    state_change_voxel_count = 0;
-    std::size_t                    dynamic_voxel_count      = 0;
-    std::size_t                    allocated_block_count    = 0;
-    std::size_t                    removed_block_count      = 0;
-    double                         otsu_threshold           = 0.0;
-    DynamicPointDetectorTimings    timings;
+    cilantro::PointCloud3f      dynamic_points;
+    cilantro::PointCloud3f      static_points;
+    std::size_t                 input_point_count        = 0;
+    std::size_t                 accepted_point_count     = 0;
+    std::size_t                 state_change_voxel_count = 0;
+    std::size_t                 dynamic_voxel_count      = 0;
+    std::size_t                 allocated_block_count    = 0;
+    std::size_t                 removed_block_count      = 0;
+    double                      otsu_threshold           = 0.0;
+    DynamicPointDetectorTimings timings;
 };
 
 class DynamicPointDetector
@@ -66,10 +64,10 @@ class DynamicPointDetector
     DynamicPointDetector& operator=(DynamicPointDetector&&)      = delete;
 
     DynamicPointDetectionResult update(
-            const pcl::PointCloud<pcl::PointXYZ>& cloud,
-            const Eigen::Vector3d&                sensor_origin,
-            double                                timestamp_sec,
-            bool                                  collect_static_points = true);
+            const cilantro::PointCloud3f& cloud,
+            const Eigen::Vector3d&        sensor_origin,
+            double                        timestamp_sec,
+            bool                          collect_static_points = true);
 
   private:
     DynamicPointDetectorParams params_;

@@ -79,29 +79,31 @@ void ObstacleTracker::setFrameId(std::string frame_id)
     params_.frame_id = std::move(frame_id);
 }
 
-TrackingResult ObstacleTracker::update(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr& dynamic_cloud,
-        double                                     current_time_sec)
+TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_cloud, double current_time_sec)
 {
     TrackingResult result;
 
     deleteOldStates(current_time_sec);
 
-    if (!dynamic_cloud || dynamic_cloud->empty())
+    if (dynamic_cloud.isEmpty())
         return result;
 
-    cilantro::VectorSet3f points(3, static_cast<Eigen::Index>(dynamic_cloud->size()));
-    Eigen::Index          point_count = 0;
-    for (const auto& point : dynamic_cloud->points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
-            continue;
-        points.col(point_count++) = Eigen::Vector3f(point.x, point.y, point.z);
+    const cilantro::VectorSet3f* points = &dynamic_cloud.points;
+    cilantro::VectorSet3f        finite_points;
+    if (!dynamic_cloud.points.allFinite()) {
+        finite_points.resize(3, dynamic_cloud.points.cols());
+        Eigen::Index point_count = 0;
+        for (Eigen::Index index = 0; index < dynamic_cloud.points.cols(); ++index) {
+            if (dynamic_cloud.points.col(index).allFinite())
+                finite_points.col(point_count++) = dynamic_cloud.points.col(index);
+        }
+        finite_points.conservativeResize(Eigen::NoChange, point_count);
+        points = &finite_points;
     }
-    points.conservativeResize(Eigen::NoChange, point_count);
-    if (points.cols() == 0)
+    if (points->cols() == 0)
         return result;
 
-    cilantro::ConnectedComponentExtraction3f<> cluster_extraction(points);
+    cilantro::ConnectedComponentExtraction3f<> cluster_extraction(*points);
     cluster_extraction.segment(
             cilantro::RadiusNeighborhoodSpecification<float>(
                     static_cast<float>(params_.cluster_tolerance * params_.cluster_tolerance)),
@@ -112,7 +114,7 @@ TrackingResult ObstacleTracker::update(
 
     std::vector<Eigen::Vector3d> centroids;
     std::vector<Eigen::Vector3d> bboxes;
-    getCentroidsAndSizes(points, cluster_indices, centroids, bboxes);
+    getCentroidsAndSizes(*points, cluster_indices, centroids, bboxes);
     std::vector<Cluster> clusters;
     for (size_t i = 0; i < cluster_indices.size(); ++i) {
         const Eigen::Vector3d& centroid = centroids[i];
