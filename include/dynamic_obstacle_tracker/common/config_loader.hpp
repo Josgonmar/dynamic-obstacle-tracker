@@ -14,9 +14,9 @@ struct DynamicPointDetectorConfig
 {
     std::string                input_cloud_topic    = "deskewed_cloud";
     std::string                dynamic_cloud_topic  = "dynamic_cloud";
-    std::string                static_cloud_topic   = "static_cloud";
     std::string                tracking_frame       = "odom";
     std::string                sensor_frame         = "lidar_link";
+    bool                       debug                = false;
     bool                       publish_static_cloud = true;
     double                     tf_timeout           = 0.05;
     DynamicPointDetectorParams detector_params;
@@ -55,10 +55,9 @@ class DetectorConfigLoader
                 = config_loader_detail::readValue(topics, "deskewed_cloud_topic", config.input_cloud_topic);
         config.dynamic_cloud_topic
                 = config_loader_detail::readValue(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
-        config.static_cloud_topic
-                = config_loader_detail::readValue(topics, "static_cloud_topic", config.static_cloud_topic);
         config.tracking_frame = config_loader_detail::readValue(frame, "tracking_frame", config.tracking_frame);
         config.sensor_frame   = config_loader_detail::readValue(frame, "sensor_frame", config.sensor_frame);
+        config.debug          = config_loader_detail::readValue(detector, "debug", config.debug);
         config.publish_static_cloud
                 = config_loader_detail::readValue(detector, "publish_static_cloud", config.publish_static_cloud);
         config.tf_timeout = config_loader_detail::readValue(detector, "tf_timeout", config.tf_timeout);
@@ -110,11 +109,8 @@ class DetectorConfigLoader
 
 struct DynamicObstacleTrackerConfig
 {
-    std::string           dynamic_cloud_topic      = "dynamic_cloud";
-    std::string           predicted_obstacle_topic = "predicted_obstacles";
-    std::string           bbox_marker_topic        = "cluster_bounding_boxes";
-    std::string           prediction_marker_topic  = "tracked_obstacles";
-    std::string           tracking_frame           = "odom";
+    std::string           dynamic_cloud_topic = "dynamic_cloud";
+    std::string           tracking_frame      = "odom";
     ObstacleTrackerParams tracker_params;
 };
 
@@ -148,12 +144,6 @@ class ConfigLoader
         DynamicObstacleTrackerConfig config;
         config.dynamic_cloud_topic
                 = config_loader_detail::readValue(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
-        config.predicted_obstacle_topic
-                = config_loader_detail::readValue(topics, "predicted_obstacle_topic", config.predicted_obstacle_topic);
-        config.bbox_marker_topic
-                = config_loader_detail::readValue(topics, "bbox_marker_topic", config.bbox_marker_topic);
-        config.prediction_marker_topic
-                = config_loader_detail::readValue(topics, "prediction_marker_topic", config.prediction_marker_topic);
         config.tracking_frame = config_loader_detail::readValue(frame, "tracking_frame", config.tracking_frame);
 
         auto& params = config.tracker_params;

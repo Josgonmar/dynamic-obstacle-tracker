@@ -5,7 +5,8 @@
 
 #include <Eigen/Core>
 #include <cstddef>
-#include <memory>
+
+#include "dynamic_obstacle_tracker/detector/temporal_voxel_map.hpp"
 
 namespace dynamic_obstacle_tracker {
 
@@ -36,6 +37,15 @@ struct DynamicPointDetectorParams
     int    garbage_collection_period      = 10;
 };
 
+struct DynamicPointDetectorTimings
+{
+    double                  preprocessing_ms   = 0.0;
+    double                  map_update_ms      = 0.0;
+    double                  output_assembly_ms = 0.0;
+    double                  total_ms           = 0.0;
+    TemporalVoxelMapTimings voxel_map;
+};
+
 struct DynamicPointDetectionResult
 {
     pcl::PointCloud<pcl::PointXYZ> dynamic_points;
@@ -44,13 +54,13 @@ struct DynamicPointDetectionResult
     std::size_t                    accepted_point_count  = 0;
     std::size_t                    allocated_block_count = 0;
     std::size_t                    removed_block_count   = 0;
+    DynamicPointDetectorTimings    timings;
 };
 
 class DynamicPointDetector
 {
   public:
     explicit DynamicPointDetector(const DynamicPointDetectorParams& params);
-    ~DynamicPointDetector();
 
     DynamicPointDetector(const DynamicPointDetector&)            = delete;
     DynamicPointDetector& operator=(const DynamicPointDetector&) = delete;
@@ -60,11 +70,12 @@ class DynamicPointDetector
     DynamicPointDetectionResult update(
             const pcl::PointCloud<pcl::PointXYZ>& cloud,
             const Eigen::Vector3d&                sensor_origin,
-            double                                timestamp_sec);
+            double                                timestamp_sec,
+            bool                                  collect_static_points = true);
 
   private:
-    class Impl;
-    std::unique_ptr<Impl> impl_;
+    DynamicPointDetectorParams params_;
+    TemporalVoxelMap           voxel_map_;
 };
 
 } // namespace dynamic_obstacle_tracker

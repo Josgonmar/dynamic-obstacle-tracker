@@ -43,6 +43,7 @@ add_library(dynamic_obstacle_tracker_component SHARED
 
 add_library(dynamic_point_detector_component SHARED
   src/detector/dynamic_point_detector.cpp
+  src/detector/temporal_voxel_map.cpp
   src/ros2/dynamic_point_detector_node.cpp
 )
 
@@ -140,7 +141,7 @@ install(
 )
 
 install(
-  DIRECTORY config launch
+  DIRECTORY config launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

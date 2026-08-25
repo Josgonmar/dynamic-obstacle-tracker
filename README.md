@@ -11,14 +11,17 @@ The package provides two independent nodes:
 
 The detector subscribes to `deskewed_cloud` by default and publishes:
 
-- `dynamic_cloud` (`sensor_msgs/PointCloud2`)
-- `static_cloud` (`sensor_msgs/PointCloud2`, configurable)
+- `dynamic_points` (`sensor_msgs/PointCloud2`)
+- `static_points` (`sensor_msgs/PointCloud2`)
+
+Static points are only materialized and published when `static_points` has at
+least one subscriber.
 
 The tracker subscribes to `dynamic_cloud` and publishes:
 
-- `predicted_obstacles` (`dynamic_obstacle_tracker/msg/DynamicObstacleTrajectory`)
-- `cluster_bounding_boxes` (`visualization_msgs/MarkerArray`)
-- `tracked_obstacles` (`visualization_msgs/MarkerArray`)
+- `obstacle_predicted_traj` (`dynamic_obstacle_tracker/msg/DynamicObstacleTrajectory`)
+- `obstacle_bbox_marker` (`visualization_msgs/MarkerArray`)
+- `obstacle_prediction_marker` (`visualization_msgs/MarkerArray`)
 
 ## Launch
 
@@ -50,6 +53,12 @@ Launch only the tracker with:
 ros2 launch dynamic_obstacle_tracker dynamic_obstacle_tracker.launch.py
 ```
 
+Launch RViz2 with the packaged configuration:
+
+```bash
+ros2 launch dynamic_obstacle_tracker dynamic_obstacle_tracker.launch.py rviz:=true
+```
+
 Override the regular YAML path with:
 
 ```bash
@@ -77,6 +86,9 @@ drops the scan; the implementation does not fall back to the latest transform.
 The detector looks up the configured `frame.sensor_frame`, (`os_sensor` for Ouster LiDARs for example) in `tracking_frame` at the cloud timestamp and uses its translation as the DDA ray origin. A complete timestamped TF tree is therefore required. A missing cloud-frame or sensor-frame transform drops the scan; neither lookup falls back to the latest transform.
 
 The tracker does not transform or relabel its input. It rejects dynamic clouds whose frame differs from `tracking_frame` and advances the EKF using the cloud timestamp.
+
+Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector
+preprocessing/output assembly, and temporal voxel-map ray casting/classification/integration.
 
 ## Dynamic-point detector
 

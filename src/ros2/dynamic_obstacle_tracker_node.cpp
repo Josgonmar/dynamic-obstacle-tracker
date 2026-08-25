@@ -42,10 +42,7 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
     }
 
     input_cloud_topic_        = topic_override.empty() ? config.dynamic_cloud_topic : topic_override;
-    predicted_obstacle_topic_ = config.predicted_obstacle_topic;
-    bbox_marker_topic_        = config.bbox_marker_topic;
-    prediction_marker_topic_  = config.prediction_marker_topic;
-    tracking_frame_           = normalizeFrame(config.tracking_frame);
+    tracking_frame_ = normalizeFrame(config.tracking_frame);
     if (tracking_frame_.empty())
         throw std::invalid_argument("frame.tracking_frame must not be empty");
 
@@ -55,11 +52,11 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
     RCLCPP_INFO(get_logger(), "Loaded tracker config from '%s'", config_path.c_str());
 
     predicted_obstacle_pub_
-            = create_publisher<msg::DynamicObstacleTrajectory>(predicted_obstacle_topic_, rclcpp::QoS(5).reliable());
+            = create_publisher<msg::DynamicObstacleTrajectory>("obstacle_predicted_traj", rclcpp::QoS(5).reliable());
     bbox_marker_pub_
-            = create_publisher<visualization_msgs::msg::MarkerArray>(bbox_marker_topic_, rclcpp::SensorDataQoS());
-    prediction_marker_pub_
-            = create_publisher<visualization_msgs::msg::MarkerArray>(prediction_marker_topic_, rclcpp::SensorDataQoS());
+            = create_publisher<visualization_msgs::msg::MarkerArray>("obstacle_bbox_marker", rclcpp::SensorDataQoS());
+    prediction_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+            "obstacle_prediction_marker", rclcpp::SensorDataQoS());
 
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             input_cloud_topic_,

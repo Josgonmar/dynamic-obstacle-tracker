@@ -18,9 +18,6 @@ class DynamicObstacleTrackerNode final : public rclcpp::Node
     void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 
     std::string  input_cloud_topic_;
-    std::string  predicted_obstacle_topic_;
-    std::string  bbox_marker_topic_;
-    std::string  prediction_marker_topic_;
     std::string  tracking_frame_;
     rclcpp::Time last_cloud_stamp_{0, 0, RCL_ROS_TIME};
 
