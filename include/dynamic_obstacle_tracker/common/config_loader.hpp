@@ -47,8 +47,7 @@ class DetectorConfigLoader
         const YAML::Node detector      = config_loader_detail::readSection(root, "detector");
         const YAML::Node preprocessing = config_loader_detail::readSection(detector, "preprocessing");
         const YAML::Node voxel_map     = config_loader_detail::readSection(detector, "voxel_map");
-        const YAML::Node occupancy     = config_loader_detail::readSection(detector, "occupancy");
-        const YAML::Node temporal      = config_loader_detail::readSection(detector, "temporal");
+        const YAML::Node hmm_mos       = config_loader_detail::readSection(detector, "hmm_mos");
 
         DynamicPointDetectorConfig config;
         config.input_cloud_topic
@@ -73,32 +72,22 @@ class DetectorConfigLoader
         params.voxels_per_block
                 = config_loader_detail::readValue(voxel_map, "voxels_per_block", params.voxels_per_block);
         params.active_radius = config_loader_detail::readValue(voxel_map, "active_radius", params.active_radius);
-        params.block_ttl     = config_loader_detail::readValue(voxel_map, "block_ttl", params.block_ttl);
         params.garbage_collection_period = config_loader_detail::readValue(
                 voxel_map, "garbage_collection_period", params.garbage_collection_period);
-        params.hit_increment  = config_loader_detail::readValue(occupancy, "hit_increment", params.hit_increment);
-        params.miss_increment = config_loader_detail::readValue(occupancy, "miss_increment", params.miss_increment);
-        params.minimum_occupancy
-                = config_loader_detail::readValue(occupancy, "minimum_occupancy", params.minimum_occupancy);
-        params.maximum_occupancy
-                = config_loader_detail::readValue(occupancy, "maximum_occupancy", params.maximum_occupancy);
-        params.occupied_threshold
-                = config_loader_detail::readValue(occupancy, "occupied_threshold", params.occupied_threshold);
-        params.free_threshold = config_loader_detail::readValue(occupancy, "free_threshold", params.free_threshold);
-        params.free_confirmation_time
-                = config_loader_detail::readValue(temporal, "free_confirmation_time", params.free_confirmation_time);
-        params.occupied_to_static_time
-                = config_loader_detail::readValue(temporal, "occupied_to_static_time", params.occupied_to_static_time);
-        params.dynamic_persistence
-                = config_loader_detail::readValue(temporal, "dynamic_persistence", params.dynamic_persistence);
-        params.observation_continuity_timeout = config_loader_detail::readValue(
-                temporal, "observation_continuity_timeout", params.observation_continuity_timeout);
-        params.minimum_dynamic_observations = config_loader_detail::readValue(
-                temporal, "minimum_dynamic_observations", params.minimum_dynamic_observations);
-        params.minimum_points_per_voxel = config_loader_detail::readValue(
-                temporal, "minimum_points_per_voxel", params.minimum_points_per_voxel);
-        params.static_neighbor_threshold = config_loader_detail::readValue(
-                temporal, "static_neighbor_threshold", params.static_neighbor_threshold);
+        params.occupancy_sigma  = config_loader_detail::readValue(hmm_mos, "occupancy_sigma", params.occupancy_sigma);
+        params.belief_threshold = config_loader_detail::readValue(hmm_mos, "belief_threshold", params.belief_threshold);
+        params.transition_epsilon
+                = config_loader_detail::readValue(hmm_mos, "transition_epsilon", params.transition_epsilon);
+        params.convolution_size = config_loader_detail::readValue(hmm_mos, "convolution_size", params.convolution_size);
+        params.local_window_size
+                = config_loader_detail::readValue(hmm_mos, "local_window_size", params.local_window_size);
+        params.global_window_size
+                = config_loader_detail::readValue(hmm_mos, "global_window_size", params.global_window_size);
+        params.minimum_otsu_threshold
+                = config_loader_detail::readValue(hmm_mos, "minimum_otsu_threshold", params.minimum_otsu_threshold);
+        params.dilation_radius_voxels
+                = config_loader_detail::readValue(hmm_mos, "dilation_radius_voxels", params.dilation_radius_voxels);
+        params.histogram_bins = config_loader_detail::readValue(hmm_mos, "histogram_bins", params.histogram_bins);
 
         return config;
     }

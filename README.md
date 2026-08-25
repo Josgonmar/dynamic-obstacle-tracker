@@ -7,6 +7,13 @@ The package provides two independent nodes:
 - `dynamic_point_detector_node`: deskewed point cloud to dynamic/static point clouds.
 - `dynamic_obstacle_tracker_node`: dynamic point cloud to tracked and predicted obstacles.
 
+The repository vendors [cilantro](https://github.com/kzampog/cilantro) as a Git submodule. After cloning without
+`--recursive`, initialize it with:
+
+```bash
+git submodule update --init --recursive
+```
+
 ## Interfaces
 
 The detector subscribes to `deskewed_cloud` by default and publishes:
@@ -88,30 +95,71 @@ The detector looks up the configured `frame.sensor_frame`, (`os_sensor` for Oust
 The tracker does not transform or relabel its input. It rejects dynamic clouds whose frame differs from `tracking_frame` and advances the EKF using the cloud timestamp.
 
 Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector
-preprocessing/output assembly, and temporal voxel-map ray casting/classification/integration.
+preprocessing/output assembly, and HMM-MOS ray casting, EDF, belief update, convolution, and segmentation.
 
 ## Dynamic-point detector
 
-The detector stores temporal occupancy in sparse `8 x 8 x 8` voxel blocks addressed by integer block coordinates.
-This follows the voxel-block spatial hashing organization and hash constants described by [Niessner et al.](https://niessnerlab.org/papers/2013/4hashing/niessner2013hashing.pdf), while replacing the paper's TSDF/color voxel payload with occupancy and temporal dynamic-state evidence.
+The detector stores HMM occupancy beliefs in sparse `8 x 8 x 8` voxel blocks addressed by integer block coordinates.
+This follows the voxel-block spatial hashing organization and hash constants described by [Niessner et al.](https://niessnerlab.org/papers/2013/4hashing/niessner2013hashing.pdf), while replacing the paper's TSDF/color voxel payload with the three HMM states `unobserved`, `occupied`, and `free`.
 
 Each scan is processed as one batch:
 
 1. Filter invalid, range-excluded, and optionally ground points.
-2. Aggregate endpoint hits and traverse observed free space with 3D DDA rays.
-3. Classify endpoints against the state that existed before the current scan.
-4. Confirm free-to-occupied transitions across scans and suppress candidates beside established static surfaces.
-5. Publish the original current-scan points belonging to confirmed dynamic voxels.
-6. Integrate free/static evidence and garbage-collect stale or distant voxel blocks.
+2. Aggregate endpoint hits and traverse all observed voxels with 3D DDA rays.
+3. Construct a Gaussian Euclidean distance field from the current and previous occupied voxelized scans.
+4. Update each observed voxel's three-state belief with the fixed HMM transition matrix and soft EDF likelihood.
+5. Seed motion from confident occupied/free state changes.
+6. Median-filter a spatial convolution score and accumulate it over the local scan window.
+7. Apply Otsu thresholding, previous-scan persistence, and current-scan nearest-neighbour dilation.
+8. Publish the original current-scan points belonging to the resulting dynamic voxels.
 
-Candidate dynamic endpoints are temporarily withheld from static occupancy integration. A candidate that remains in
-the same voxel for `occupied_to_static_time` is absorbed as static, preventing indefinitely persistent false dynamic
-labels. The map is bounded by both `active_radius` and `block_ttl`.
+The EDF nearest-neighbour search uses cilantro's nanoflann-backed 3D KD-tree. Current and previous occupied voxels
+take the exact zero-distance fast path and therefore do not issue a KD-tree query. The tracker uses cilantro radius
+connected components in place of PCL Euclidean clustering, preserving the configured tolerance and cluster-size
+limits. PCL remains only for the ROS `PointCloud2` conversion and point container boundary.
+
+`occupancy_sigma` represents combined point and pose uncertainty and defaults to the voxel size. The fixed transition
+matrix uses `transition_epsilon` to retain strong state self-transition probabilities. `belief_threshold` controls
+when a voxel commits to a discrete occupied/free state. The convolution, window, Otsu, and dilation parameters under
+`detector.hmm_mos` implement the second HMM-MOS stage. The first `local_window_size` scans warm up the score history
+and intentionally produce no dynamic output. `global_window_size` resets stale beliefs and, together with
+`active_radius`, bounds the hashed map.
 
 ## Attribution and disclaimer
 
-The tracker structure and implementation in
-`include/dynamic_obstacle_tracker/tracker/obstacle_tracker.hpp` and `src/tracker/obstacle_tracker.cpp` are adapted from the obstacle tracker in the MIT-licensed `global_mapper_ros` package from the [acl-mapping](https://gitlab.com/mit-acl/lab/acl-mapping/-/tree/mighty) repository.
+The package vendors and uses the MIT-licensed [cilantro](https://github.com/kzampog/cilantro) library for KD-tree nearest-neighbour search and connected-component point-cloud clustering. Its license is retained in `external/cilantro/LICENSE` and installed as `share/dynamic_obstacle_tracker/licenses/cilantro-LICENSE`.
+
+The HMM occupancy update, spatiotemporal convolution, Otsu segmentation, persistence, and dilation in
+`src/detector/temporal_voxel_map.cpp` are adapted from the MIT-licensed [HMM-MOS](https://github.com/vb44/HMM-MOS) implementation accompanying “Moving Object Segmentation in Point Cloud Data using Hidden Markov Models.” The dense dataset I/O and map were replaced by this package's block-hashed,
+timestamped ROS 2 implementation.
+
+The upstream HMM-MOS package identifies the following MIT notice:
+
+```text
+MIT License
+
+Copyright (c) 2024 Vedant Bhandari, Jasmin James, Tyson Phillips, Ross McAree
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The tracker structure and implementation in `include/dynamic_obstacle_tracker/tracker/obstacle_tracker.hpp` and `src/tracker/obstacle_tracker.cpp` are adapted from the obstacle tracker in the MIT-licensed `global_mapper_ros` package from the [acl-mapping](https://gitlab.com/mit-acl/lab/acl-mapping/-/tree/mighty) repository.
 
 The upstream package identifies the following MIT notice:
 
@@ -140,3 +188,58 @@ SOFTWARE.
 ```
 
 The upstream implementation also records that it was ported from [`dynus/obstacle_tracker_node.hpp`](https://github.com/mit-acl/dynus/blob/main/include/dynus/obstacle_tracker_node.hpp).
+
+## Citations
+
+```bibtex
+@inproceedings{zampogiannis2018cilantro,
+  author={Zampogiannis, Konstantinos and Fermuller, Cornelia and Aloimonos, Yiannis},
+  title={cilantro: A Lean, Versatile, and Efficient Library for Point Cloud Data Processing},
+  booktitle={Proceedings of the 26th ACM International Conference on Multimedia},
+  year={2018},
+  pages={1364--1367},
+  doi={10.1145/3240508.3243655}
+}
+```
+
+```bibtex
+@inproceedings{ryll2019efficient,
+  title={Efficient Trajectory Planning for High Speed Flight in Unknown Environments},
+  author={Ryll, Markus and Ware, John and Carter, John and Roy, Nick},
+  booktitle={2019 International Conference on Robotics and Automation (ICRA)},
+  pages={732--738},
+  year={2019},
+  organization={IEEE}
+}
+```
+
+```bibtex
+@inproceedings{tordesillas2019faster,
+  title={{FASTER}: Fast and Safe Trajectory Planner for Flights in Unknown Environments},
+  author={Tordesillas, Jesus and Lopez, Brett T and How, Jonathan P},
+  booktitle={2019 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  year={2019},
+  organization={IEEE}
+}
+```
+
+```bibtex
+@article{tordesillas2018real,
+  title={Real-Time Planning with Multi-Fidelity Models for Agile Flights in Unknown Environments},
+  author={Tordesillas, Jesus and Lopez, Brett T and Carter, John and Ware, John and How, Jonathan P},
+  journal={arXiv preprint arXiv:1810.01035},
+  year={2018}
+}
+```
+
+```bibtex
+@misc{bhandari2024movingobjectsegmentationpoint,
+      title={Moving Object Segmentation in Point Cloud Data using Hidden Markov Models},
+      author={Vedant Bhandari and Jasmin James and Tyson Phillips and P. Ross McAree},
+      year={2024},
+      eprint={2410.18638},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2410.18638},
+}
+```

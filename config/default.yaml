@@ -13,7 +13,7 @@ detector:
 
   preprocessing:
     minimum_range: 2.0
-    maximum_range: 30.0
+    maximum_range: 15.0
     remove_ground: true
     ground_height: 0.0
     ground_clearance: 0.15
@@ -22,25 +22,18 @@ detector:
     voxel_size: 0.20
     voxels_per_block: 8
     active_radius: 40.0
-    block_ttl: 10.0
     garbage_collection_period: 10
 
-  occupancy:
-    hit_increment: 0.40
-    miss_increment: -0.40
-    minimum_occupancy: -1.0
-    maximum_occupancy: 1.0
-    occupied_threshold: 0.60
-    free_threshold: -0.20
-
-  temporal:
-    free_confirmation_time: 0.40
-    occupied_to_static_time: 2.0
-    dynamic_persistence: 0.50
-    observation_continuity_timeout: 0.50
-    minimum_dynamic_observations: 2
-    minimum_points_per_voxel: 1
-    static_neighbor_threshold: 5
+  hmm_mos:
+    occupancy_sigma: 0.20
+    belief_threshold: 0.99
+    transition_epsilon: 0.005
+    convolution_size: 5
+    local_window_size: 3
+    global_window_size: 300
+    minimum_otsu_threshold: 3.0
+    dilation_radius_voxels: 1
+    histogram_bins: 100
 
 tracker:
   clustering:

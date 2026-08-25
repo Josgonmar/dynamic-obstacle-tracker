@@ -1,12 +1,12 @@
 #include "dynamic_obstacle_tracker/tracker/obstacle_tracker.hpp"
 
-#include <pcl/search/kdtree.h>
-
 #include <algorithm>
+#include <cilantro/clustering/connected_component_extraction.hpp>
 #include <cmath>
 #include <cstdlib>
 #include <geometry_msgs/msg/point.hpp>
 #include <limits>
+#include <stdexcept>
 
 namespace dynamic_obstacle_tracker {
 
@@ -67,7 +67,12 @@ EKFState::EKFState(
 ObstacleTracker::ObstacleTracker(const ObstacleTrackerParams& params, rclcpp::Logger logger) :
         params_(params),
         logger_(logger)
-{}
+{
+    if (!std::isfinite(params_.cluster_tolerance) || params_.cluster_tolerance <= 0.0)
+        throw std::invalid_argument("cluster_tolerance must be finite and positive");
+    if (params_.min_cluster_size < 1 || params_.max_cluster_size < params_.min_cluster_size)
+        throw std::invalid_argument("cluster sizes must satisfy 1 <= min_cluster_size <= max_cluster_size");
+}
 
 void ObstacleTracker::setFrameId(std::string frame_id)
 {
@@ -85,21 +90,29 @@ TrackingResult ObstacleTracker::update(
     if (!dynamic_cloud || dynamic_cloud->empty())
         return result;
 
-    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-    tree->setInputCloud(dynamic_cloud);
+    cilantro::VectorSet3f points(3, static_cast<Eigen::Index>(dynamic_cloud->size()));
+    Eigen::Index          point_count = 0;
+    for (const auto& point : dynamic_cloud->points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            continue;
+        points.col(point_count++) = Eigen::Vector3f(point.x, point.y, point.z);
+    }
+    points.conservativeResize(Eigen::NoChange, point_count);
+    if (points.cols() == 0)
+        return result;
 
-    std::vector<pcl::PointIndices>                 cluster_indices;
-    pcl::EuclideanClusterExtraction<pcl::PointXYZ> cluster_extraction;
-    cluster_extraction.setClusterTolerance(params_.cluster_tolerance);
-    cluster_extraction.setMinClusterSize(params_.min_cluster_size);
-    cluster_extraction.setMaxClusterSize(params_.max_cluster_size);
-    cluster_extraction.setSearchMethod(tree);
-    cluster_extraction.setInputCloud(dynamic_cloud);
-    cluster_extraction.extract(cluster_indices);
+    cilantro::ConnectedComponentExtraction3f<> cluster_extraction(points);
+    cluster_extraction.segment(
+            cilantro::RadiusNeighborhoodSpecification<float>(
+                    static_cast<float>(params_.cluster_tolerance * params_.cluster_tolerance)),
+            cilantro::AlwaysTrueEvaluator<float>(),
+            static_cast<std::size_t>(params_.min_cluster_size),
+            static_cast<std::size_t>(params_.max_cluster_size));
+    const auto& cluster_indices = cluster_extraction.getClusterToPointIndicesMap();
 
     std::vector<Eigen::Vector3d> centroids;
     std::vector<Eigen::Vector3d> bboxes;
-    getCentroidsAndSizes(dynamic_cloud, cluster_indices, centroids, bboxes);
+    getCentroidsAndSizes(points, cluster_indices, centroids, bboxes);
     std::vector<Cluster> clusters;
     for (size_t i = 0; i < cluster_indices.size(); ++i) {
         const Eigen::Vector3d& centroid = centroids[i];
@@ -286,10 +299,10 @@ void ObstacleTracker::calculateAverageQandR(Eigen::MatrixXd& Q_avg, Eigen::Matri
 }
 
 void ObstacleTracker::getCentroidsAndSizes(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-        const std::vector<pcl::PointIndices>&      indices,
-        std::vector<Eigen::Vector3d>&              centroids,
-        std::vector<Eigen::Vector3d>&              bboxes)
+        const Eigen::Matrix<float, 3, Eigen::Dynamic>& cloud,
+        const std::vector<std::vector<std::size_t>>&   indices,
+        std::vector<Eigen::Vector3d>&                  centroids,
+        std::vector<Eigen::Vector3d>&                  bboxes)
 {
     centroids.reserve(indices.size());
     bboxes.reserve(indices.size());
@@ -298,11 +311,10 @@ void ObstacleTracker::getCentroidsAndSizes(
         Eigen::Vector3d min_point = Eigen::Vector3d::Constant(std::numeric_limits<double>::max());
         Eigen::Vector3d max_point = Eigen::Vector3d::Constant(std::numeric_limits<double>::lowest());
 
-        for (const auto& index : cluster.indices) {
-            const auto&           point = cloud->points[index];
-            const Eigen::Vector3d position(point.x, point.y, point.z);
-            min_point = min_point.cwiseMin(position);
-            max_point = max_point.cwiseMax(position);
+        for (const std::size_t index : cluster) {
+            const Eigen::Vector3d position = cloud.col(static_cast<Eigen::Index>(index)).cast<double>();
+            min_point                      = min_point.cwiseMin(position);
+            max_point                      = max_point.cwiseMax(position);
         }
 
         centroids.emplace_back((min_point + max_point) * 0.5);

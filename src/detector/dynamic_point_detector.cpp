@@ -26,24 +26,19 @@ struct AcceptedPoint
 TemporalVoxelMapParams makeTemporalVoxelMapParams(const DynamicPointDetectorParams& params)
 {
     TemporalVoxelMapParams map_params;
-    map_params.voxel_size                     = params.voxel_size;
-    map_params.voxels_per_block               = params.voxels_per_block;
-    map_params.hit_increment                  = params.hit_increment;
-    map_params.miss_increment                 = params.miss_increment;
-    map_params.minimum_occupancy              = params.minimum_occupancy;
-    map_params.maximum_occupancy              = params.maximum_occupancy;
-    map_params.occupied_threshold             = params.occupied_threshold;
-    map_params.free_threshold                 = params.free_threshold;
-    map_params.free_confirmation_time         = params.free_confirmation_time;
-    map_params.occupied_to_static_time        = params.occupied_to_static_time;
-    map_params.dynamic_persistence            = params.dynamic_persistence;
-    map_params.observation_continuity_timeout = params.observation_continuity_timeout;
-    map_params.minimum_dynamic_observations   = params.minimum_dynamic_observations;
-    map_params.minimum_points_per_voxel       = params.minimum_points_per_voxel;
-    map_params.static_neighbor_threshold      = params.static_neighbor_threshold;
-    map_params.active_radius                  = params.active_radius;
-    map_params.block_ttl                      = params.block_ttl;
-    map_params.garbage_collection_period      = params.garbage_collection_period;
+    map_params.voxel_size                = params.voxel_size;
+    map_params.voxels_per_block          = params.voxels_per_block;
+    map_params.occupancy_sigma           = params.occupancy_sigma;
+    map_params.belief_threshold          = params.belief_threshold;
+    map_params.transition_epsilon        = params.transition_epsilon;
+    map_params.convolution_size          = params.convolution_size;
+    map_params.local_window_size         = params.local_window_size;
+    map_params.global_window_size        = params.global_window_size;
+    map_params.minimum_otsu_threshold    = params.minimum_otsu_threshold;
+    map_params.dilation_radius_voxels    = params.dilation_radius_voxels;
+    map_params.histogram_bins            = params.histogram_bins;
+    map_params.active_radius             = params.active_radius;
+    map_params.garbage_collection_period = params.garbage_collection_period;
     return map_params;
 }
 
@@ -132,9 +127,12 @@ DynamicPointDetectionResult DynamicPointDetector::update(
     if (collect_static_points)
         finalizeCloud(result.static_points);
 
-    result.allocated_block_count = map_result.allocated_block_count;
-    result.removed_block_count   = map_result.removed_block_count;
-    const auto total_end         = SteadyClock::now();
+    result.state_change_voxel_count = map_result.state_change_voxel_count;
+    result.dynamic_voxel_count      = map_result.dynamic_voxels.size();
+    result.allocated_block_count    = map_result.allocated_block_count;
+    result.removed_block_count      = map_result.removed_block_count;
+    result.otsu_threshold           = map_result.otsu_threshold;
+    const auto total_end            = SteadyClock::now();
 
     result.timings.preprocessing_ms   = elapsedMilliseconds(total_start, preprocessing_end);
     result.timings.map_update_ms      = elapsedMilliseconds(preprocessing_end, map_update_end);

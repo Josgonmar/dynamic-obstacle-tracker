@@ -227,10 +227,14 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
         const auto& map_timings = result.timings.voxel_map;
         RCLCPP_INFO(
                 get_logger(),
-                "Detector scan: input=%zu accepted=%zu dynamic=%zu blocks=%zu removed=%zu",
+                "Detector scan: input=%zu accepted=%zu state_changes=%zu dynamic_voxels=%zu dynamic_points=%zu "
+                "otsu=%.2f blocks=%zu removed=%zu",
                 result.input_point_count,
                 result.accepted_point_count,
+                result.state_change_voxel_count,
+                result.dynamic_voxel_count,
                 result.dynamic_points.size(),
+                result.otsu_threshold,
                 result.allocated_block_count,
                 result.removed_block_count);
         RCLCPP_INFO(
@@ -246,16 +250,18 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
         RCLCPP_INFO(
                 get_logger(),
                 "Detector core timing [ms]: preprocessing=%.2f map=%.2f output=%.2f total=%.2f | ray_casting=%.2f "
-                "classification=%.2f free_integration=%.2f hit_integration=%.2f garbage_collection=%.2f "
+                "edf=%.2f hmm=%.2f spatial_conv=%.2f temporal_conv=%.2f segmentation=%.2f garbage_collection=%.2f "
                 "scan_cleanup=%.2f map_total=%.2f",
                 result.timings.preprocessing_ms,
                 result.timings.map_update_ms,
                 result.timings.output_assembly_ms,
                 result.timings.total_ms,
                 map_timings.ray_casting_ms,
-                map_timings.candidate_classification_ms,
-                map_timings.free_space_integration_ms,
-                map_timings.hit_integration_ms,
+                map_timings.edf_construction_ms,
+                map_timings.hmm_update_ms,
+                map_timings.spatial_convolution_ms,
+                map_timings.temporal_convolution_ms,
+                map_timings.segmentation_ms,
                 map_timings.garbage_collection_ms,
                 map_timings.scan_cleanup_ms,
                 map_timings.total_ms);

@@ -2,9 +2,9 @@
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/segmentation/extract_clusters.h>
 
 #include <Eigen/Dense>
+#include <cstddef>
 #include <dynamic_obstacle_tracker/msg/dynamic_obstacle_trajectory.hpp>
 #include <dynamic_obstacle_tracker/msg/piecewise_polynomial3.hpp>
 #include <dynamic_obstacle_tracker/msg/polynomial3.hpp>
@@ -124,10 +124,10 @@ class ObstacleTracker
     void deleteOldStates(double current_time);
     void calculateAverageQandR(Eigen::MatrixXd& Q_avg, Eigen::MatrixXd& R_avg);
     void getCentroidsAndSizes(
-            const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-            const std::vector<pcl::PointIndices>&      indices,
-            std::vector<Eigen::Vector3d>&              centroids,
-            std::vector<Eigen::Vector3d>&              bboxes);
+            const Eigen::Matrix<float, 3, Eigen::Dynamic>& cloud,
+            const std::vector<std::vector<std::size_t>>&   indices,
+            std::vector<Eigen::Vector3d>&                  centroids,
+            std::vector<Eigen::Vector3d>&                  bboxes);
     void appendToHistory(EKFState& state, double time, const Eigen::Vector3d& pos);
     void generatePredictions(const std::vector<Cluster>& clusters, double current_time_sec, TrackingResult& result);
     void generateBoxMarkers(const std::vector<Cluster>& clusters, TrackingResult& result);

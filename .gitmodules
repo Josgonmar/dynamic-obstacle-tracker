@@ -1,0 +1,3 @@
+[submodule "external/cilantro"]
+	path = external/cilantro
+	url = https://github.com/kzampog/cilantro

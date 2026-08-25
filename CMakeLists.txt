@@ -13,7 +13,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common kdtree search segmentation)
+find_package(PCL REQUIRED COMPONENTS common)
 find_package(TBB REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -27,6 +27,13 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(yaml-cpp REQUIRED)
+
+# The KD-tree and clustering modules are header-only. Avoid cilantro's top-level
+# CMake project, which also builds optional visualization sources and sets global flags.
+set(CILANTRO_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/cilantro/include")
+if(NOT EXISTS "${CILANTRO_INCLUDE_DIR}/cilantro/core/kd_tree.hpp")
+  message(FATAL_ERROR "The cilantro submodule is missing; run 'git submodule update --init --recursive'")
+endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Polynomial3.msg"
@@ -58,6 +65,14 @@ target_include_directories(dynamic_point_detector_component PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
+)
+
+target_include_directories(dynamic_obstacle_tracker_component SYSTEM PRIVATE
+  ${CILANTRO_INCLUDE_DIR}
+)
+
+target_include_directories(dynamic_point_detector_component SYSTEM PRIVATE
+  ${CILANTRO_INCLUDE_DIR}
 )
 
 ament_target_dependencies(dynamic_obstacle_tracker_component
@@ -145,6 +160,12 @@ install(
 install(
   DIRECTORY config launch rviz
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  FILES external/cilantro/LICENSE
+  DESTINATION share/${PROJECT_NAME}/licenses
+  RENAME cilantro-LICENSE
 )
 
 ament_export_dependencies(rosidl_default_runtime)
