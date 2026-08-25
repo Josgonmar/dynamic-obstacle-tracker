@@ -246,7 +246,8 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
         RCLCPP_INFO(
                 get_logger(),
                 "Detector core timing [ms]: preprocessing=%.2f map=%.2f output=%.2f total=%.2f | ray_casting=%.2f "
-                "classification=%.2f free_integration=%.2f hit_integration=%.2f garbage_collection=%.2f map_total=%.2f",
+                "classification=%.2f free_integration=%.2f hit_integration=%.2f garbage_collection=%.2f "
+                "scan_cleanup=%.2f map_total=%.2f",
                 result.timings.preprocessing_ms,
                 result.timings.map_update_ms,
                 result.timings.output_assembly_ms,
@@ -256,6 +257,7 @@ void DynamicPointDetectorNode::cloudCallback(const sensor_msgs::msg::PointCloud2
                 map_timings.free_space_integration_ms,
                 map_timings.hit_integration_ms,
                 map_timings.garbage_collection_ms,
+                map_timings.scan_cleanup_ms,
                 map_timings.total_ms);
     }
 }

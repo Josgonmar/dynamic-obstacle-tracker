@@ -14,6 +14,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common kdtree search segmentation)
+find_package(TBB REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -91,6 +92,7 @@ target_link_libraries(dynamic_obstacle_tracker_component
 target_link_libraries(dynamic_point_detector_component
   ${PCL_LIBRARIES}
   Eigen3::Eigen
+  TBB::tbb
   yaml-cpp
 )
 

@@ -7,7 +7,7 @@ frame:
   sensor_frame: os_sensor
 
 detector:
-  debug: false # Publish per-scan timing breakdowns to the ROS log
+  debug: true # Publish per-scan timing breakdowns to the ROS log
   publish_static_cloud: false
   tf_timeout: 0.05
 

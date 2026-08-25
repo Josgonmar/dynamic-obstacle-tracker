@@ -2,6 +2,7 @@
 
 #include <Eigen/Core>
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
@@ -67,6 +68,7 @@ struct TemporalVoxelMapTimings
     double free_space_integration_ms   = 0.0;
     double hit_integration_ms          = 0.0;
     double garbage_collection_ms       = 0.0;
+    double scan_cleanup_ms             = 0.0;
     double total_ms                    = 0.0;
 };
 
@@ -94,7 +96,9 @@ class TemporalVoxelMap
     static constexpr int kVoxelsPerBlock = 8;
     static constexpr int kVoxelsInBlock  = kVoxelsPerBlock * kVoxelsPerBlock * kVoxelsPerBlock;
 
-    using BlockIndex = VoxelIndex;
+    using BlockIndex   = VoxelIndex;
+    using BlockMask    = std::bitset<kVoxelsInBlock>;
+    using BlockMaskMap = std::unordered_map<BlockIndex, BlockMask, VoxelIndexHash>;
 
     struct TemporalVoxel
     {
@@ -137,9 +141,9 @@ class TemporalVoxelMap
             const Eigen::Vector3d& start,
             const Eigen::Vector3d& end,
             const VoxelIndex&      endpoint,
-            VoxelIndexSet&         free_voxels) const;
-    int         countStaticNeighbors(const VoxelIndex& index) const;
-    void        updateFreeVoxel(const VoxelIndex& index, double timestamp_sec);
+            BlockMaskMap&          free_blocks) const;
+    bool        reachesStaticNeighborThreshold(const VoxelIndex& index, int threshold) const;
+    void        updateFreeVoxel(TemporalVoxel& voxel, double timestamp_sec);
     void        updateHitVoxel(const VoxelIndex& index, const HitDecision& decision, double timestamp_sec);
     std::size_t garbageCollect(const Eigen::Vector3d& sensor_origin, double timestamp_sec);
 
