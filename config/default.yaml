@@ -1,6 +1,6 @@
 topics:
   deskewed_cloud_topic: "/ouster/points" # Input (deskewed) point cloud
-  dynamic_cloud_topic: "" # Leave empty if launching the full pipeline (dynamic pts detector + obstacle tracking)
+  dynamic_cloud_topic: "" # Empty uses /dynamic_point_detector/dynamic_points for detector output and tracker input
 
 frame:
   tracking_frame: odom
@@ -13,33 +13,35 @@ detector:
 
   preprocessing:
     minimum_range: 2.0
-    maximum_range: 30.0
-    remove_ground: true
-    ground_height: 0.0
-    ground_clearance: 0.15
+    maximum_range: 20.0
+    remove_ground: false
+    ground_height: 0.0 # Ground-plane z in tracking_frame; adjust if odom starts at the UAV/sensor height
+    ground_clearance: 0.05
 
   voxel_map:
-    voxel_size: 0.20
+    voxel_size: 0.25
     voxels_per_block: 8
-    active_radius: 40.0
+    active_radius: 50.0 # Sensor-centered retention radius; keep larger than maximum_range
     garbage_collection_period: 10
 
   hmm_mos:
-    occupancy_sigma: 0.20
+    occupancy_sigma: 0.25
     belief_threshold: 0.99
     transition_epsilon: 0.005
     convolution_size: 5
-    local_window_size: 3
+    local_window_size: 5
     global_window_size: 300
     minimum_otsu_threshold: 3.0
     dilation_radius_voxels: 1
     histogram_bins: 100
 
 tracker:
+  debug: true # Publish per-scan tracker timing breakdowns to the ROS log
+
   clustering:
     cluster_tolerance: 1.0
     min_cluster_size: 20
-    max_cluster_size: 2000
+    max_cluster_size: 200
     cluster_bbox_cutoff_size: 2.0
 
   tracking:

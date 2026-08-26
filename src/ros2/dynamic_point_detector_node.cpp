@@ -47,6 +47,7 @@ DynamicPointDetectorNode::DynamicPointDetectorNode(const rclcpp::NodeOptions& op
     }
 
     input_cloud_topic_    = topic_override.empty() ? config.input_cloud_topic : topic_override;
+    dynamic_cloud_topic_  = config.dynamic_cloud_topic;
     tracking_frame_       = normalizeFrame(config.tracking_frame);
     sensor_frame_         = normalizeFrame(config.sensor_frame);
     debug_                = config.debug;
@@ -64,7 +65,7 @@ DynamicPointDetectorNode::DynamicPointDetectorNode(const rclcpp::NodeOptions& op
     tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    dynamic_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("dynamic_points", rclcpp::SensorDataQoS());
+    dynamic_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(dynamic_cloud_topic_, rclcpp::SensorDataQoS());
     if (publish_static_cloud_) {
         static_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("static_points", rclcpp::SensorDataQoS());
     }
@@ -77,8 +78,9 @@ DynamicPointDetectorNode::DynamicPointDetectorNode(const rclcpp::NodeOptions& op
     RCLCPP_INFO(get_logger(), "Loaded detector config from '%s'", config_path.c_str());
     RCLCPP_INFO(
             get_logger(),
-            "Detecting dynamic points from '%s' in tracking frame '%s' using sensor frame '%s'",
+            "Detecting dynamic points from '%s' to '%s' in tracking frame '%s' using sensor frame '%s'",
             input_cloud_topic_.c_str(),
+            dynamic_cloud_topic_.c_str(),
             tracking_frame_.c_str(),
             sensor_frame_.c_str());
 }

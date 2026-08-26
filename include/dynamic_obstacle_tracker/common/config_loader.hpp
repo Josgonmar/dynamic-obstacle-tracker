@@ -10,10 +10,12 @@
 
 namespace dynamic_obstacle_tracker {
 
+inline constexpr char kDefaultDynamicCloudTopic[] = "/dynamic_point_detector/dynamic_points";
+
 struct DynamicPointDetectorConfig
 {
     std::string                input_cloud_topic    = "deskewed_cloud";
-    std::string                dynamic_cloud_topic  = "dynamic_cloud";
+    std::string                dynamic_cloud_topic  = kDefaultDynamicCloudTopic;
     std::string                tracking_frame       = "odom";
     std::string                sensor_frame         = "lidar_link";
     bool                       debug                = false;
@@ -51,9 +53,9 @@ class DetectorConfigLoader
 
         DynamicPointDetectorConfig config;
         config.input_cloud_topic
-                = config_loader_detail::readValue(topics, "deskewed_cloud_topic", config.input_cloud_topic);
+                = config_loader_detail::readNonEmptyString(topics, "deskewed_cloud_topic", config.input_cloud_topic);
         config.dynamic_cloud_topic
-                = config_loader_detail::readValue(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
+                = config_loader_detail::readNonEmptyString(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
         config.tracking_frame = config_loader_detail::readValue(frame, "tracking_frame", config.tracking_frame);
         config.sensor_frame   = config_loader_detail::readValue(frame, "sensor_frame", config.sensor_frame);
         config.debug          = config_loader_detail::readValue(detector, "debug", config.debug);
@@ -98,8 +100,9 @@ class DetectorConfigLoader
 
 struct DynamicObstacleTrackerConfig
 {
-    std::string           dynamic_cloud_topic = "dynamic_cloud";
+    std::string           dynamic_cloud_topic = kDefaultDynamicCloudTopic;
     std::string           tracking_frame      = "odom";
+    bool                  debug               = false;
     ObstacleTrackerParams tracker_params;
 };
 
@@ -132,8 +135,9 @@ class ConfigLoader
 
         DynamicObstacleTrackerConfig config;
         config.dynamic_cloud_topic
-                = config_loader_detail::readValue(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
+                = config_loader_detail::readNonEmptyString(topics, "dynamic_cloud_topic", config.dynamic_cloud_topic);
         config.tracking_frame = config_loader_detail::readValue(frame, "tracking_frame", config.tracking_frame);
+        config.debug          = config_loader_detail::readValue(tracker, "debug", config.debug);
 
         auto& params = config.tracker_params;
         params.cluster_tolerance

@@ -21,6 +21,12 @@ T readValue(const YAML::Node& root, const char* key, const T& fallback)
     }
 }
 
+inline std::string readNonEmptyString(const YAML::Node& root, const char* key, const std::string& fallback)
+{
+    const std::string value = readValue<std::string>(root, key, fallback);
+    return value.empty() ? fallback : value;
+}
+
 inline YAML::Node readSection(const YAML::Node& root, const char* key)
 {
     const YAML::Node section = root[key];

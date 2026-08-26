@@ -21,6 +21,7 @@ class DynamicPointDetectorNode final : public rclcpp::Node
     void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 
     std::string  input_cloud_topic_;
+    std::string  dynamic_cloud_topic_;
     std::string  tracking_frame_;
     std::string  sensor_frame_;
     bool         debug_                = false;

@@ -1,6 +1,7 @@
 #include "dynamic_obstacle_tracker/ros2/dynamic_obstacle_tracker_node.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -11,6 +12,17 @@
 #include "dynamic_obstacle_tracker/common/utils.hpp"
 
 namespace dynamic_obstacle_tracker {
+namespace {
+
+using SteadyClock = std::chrono::steady_clock;
+
+double elapsedMilliseconds(const SteadyClock::time_point& start, const SteadyClock::time_point& end)
+{
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+} // namespace
+
 DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions& options) :
         Node("dynamic_obstacle_tracker_node", options)
 {
@@ -32,6 +44,7 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
 
     input_cloud_topic_ = topic_override.empty() ? config.dynamic_cloud_topic : topic_override;
     tracking_frame_    = normalizeFrame(config.tracking_frame);
+    debug_             = config.debug;
     if (tracking_frame_.empty())
         throw std::invalid_argument("frame.tracking_frame must not be empty");
 
@@ -43,9 +56,9 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
     predicted_obstacle_pub_
             = create_publisher<msg::DynamicObstacleTrajectory>("obstacle_predicted_traj", rclcpp::QoS(5).reliable());
     bbox_marker_pub_
-            = create_publisher<visualization_msgs::msg::MarkerArray>("obstacle_bbox_marker", rclcpp::SensorDataQoS());
+            = create_publisher<visualization_msgs::msg::MarkerArray>("obstacle_bbox_marker", rclcpp::QoS(5).reliable());
     prediction_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-            "obstacle_prediction_marker", rclcpp::SensorDataQoS());
+            "obstacle_prediction_marker", rclcpp::QoS(5).reliable());
 
     cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             input_cloud_topic_,
@@ -61,6 +74,8 @@ DynamicObstacleTrackerNode::DynamicObstacleTrackerNode(const rclcpp::NodeOptions
 
 void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
 {
+    const auto callback_start = SteadyClock::now();
+
     const std::string frame_id = normalizeFrame(msg->header.frame_id);
     if (frame_id.empty()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Input dynamic point cloud has no frame_id");
@@ -87,6 +102,7 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
         return;
     }
 
+    const auto             conversion_start = SteadyClock::now();
     cilantro::PointCloud3f cloud;
     try {
         cloud = pointCloud2ToCilantro(*msg);
@@ -94,10 +110,14 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
         RCLCPP_WARN(get_logger(), "Could not convert tracker input cloud: %s", exception.what());
         return;
     }
+    const auto conversion_end = SteadyClock::now();
 
-    const auto result = tracker_->update(cloud, stamp.seconds());
-    last_cloud_stamp_ = stamp;
+    const auto tracker_start = SteadyClock::now();
+    const auto result        = tracker_->update(cloud, stamp.seconds());
+    const auto tracker_end   = SteadyClock::now();
+    last_cloud_stamp_        = stamp;
 
+    const auto publication_start = SteadyClock::now();
     for (auto trajectory : result.trajectories) {
         trajectory.header.stamp = stamp;
         predicted_obstacle_pub_->publish(trajectory);
@@ -113,6 +133,38 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
         auto markers = result.prediction_markers;
         for (auto& marker : markers.markers) marker.header.stamp = stamp;
         prediction_marker_pub_->publish(markers);
+    }
+    const auto publication_end = SteadyClock::now();
+
+    if (debug_) {
+        RCLCPP_INFO(
+                get_logger(),
+                "Tracker scan: input=%zu finite=%zu candidate_clusters=%zu accepted_clusters=%zu active_tracks=%zu "
+                "predictions=%zu",
+                result.input_point_count,
+                result.finite_point_count,
+                result.candidate_cluster_count,
+                result.accepted_cluster_count,
+                result.active_track_count,
+                result.trajectories.size());
+        RCLCPP_INFO(
+                get_logger(),
+                "Tracker timing [ms]: callback=%.2f ros_to_cilantro=%.2f core=%.2f publication=%.2f",
+                elapsedMilliseconds(callback_start, publication_end),
+                elapsedMilliseconds(conversion_start, conversion_end),
+                elapsedMilliseconds(tracker_start, tracker_end),
+                elapsedMilliseconds(publication_start, publication_end));
+        RCLCPP_INFO(
+                get_logger(),
+                "Tracker core timing [ms]: cleanup=%.2f finite_filter=%.2f clustering=%.2f state_update=%.2f "
+                "bbox_markers=%.2f prediction=%.2f total=%.2f",
+                result.timings.state_cleanup_ms,
+                result.timings.finite_filter_ms,
+                result.timings.clustering_ms,
+                result.timings.state_update_ms,
+                result.timings.bbox_markers_ms,
+                result.timings.prediction_ms,
+                result.timings.total_ms);
     }
 }
 

@@ -19,6 +19,7 @@ class DynamicObstacleTrackerNode final : public rclcpp::Node
 
     std::string  input_cloud_topic_;
     std::string  tracking_frame_;
+    bool         debug_ = false;
     rclcpp::Time last_cloud_stamp_{0, 0, RCL_ROS_TIME};
 
     std::unique_ptr<ObstacleTracker>                                   tracker_;

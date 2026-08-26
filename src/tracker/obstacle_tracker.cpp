@@ -1,6 +1,7 @@
 #include "dynamic_obstacle_tracker/tracker/obstacle_tracker.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cilantro/clustering/connected_component_extraction.hpp>
 #include <cmath>
 #include <cstdlib>
@@ -9,6 +10,16 @@
 #include <stdexcept>
 
 namespace dynamic_obstacle_tracker {
+namespace {
+
+using SteadyClock = std::chrono::steady_clock;
+
+double elapsedMilliseconds(const SteadyClock::time_point& start, const SteadyClock::time_point& end)
+{
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+} // namespace
 
 msg::PiecewisePolynomial3 convertPiecewisePolynomialMessage(const PiecewisePolynomial& pwp)
 {
@@ -81,16 +92,20 @@ void ObstacleTracker::setFrameId(std::string frame_id)
 
 TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_cloud, double current_time_sec)
 {
+    const auto     total_start = SteadyClock::now();
     TrackingResult result;
+    result.input_point_count = static_cast<std::size_t>(dynamic_cloud.points.cols());
 
+    const auto cleanup_start = SteadyClock::now();
     deleteOldStates(current_time_sec);
+    const auto cleanup_end          = SteadyClock::now();
+    result.timings.state_cleanup_ms = elapsedMilliseconds(cleanup_start, cleanup_end);
+    result.active_track_count       = ekf_states_.size();
 
-    if (dynamic_cloud.isEmpty())
-        return result;
-
-    const cilantro::VectorSet3f* points = &dynamic_cloud.points;
+    const auto                   finite_filter_start = SteadyClock::now();
+    const cilantro::VectorSet3f* points              = &dynamic_cloud.points;
     cilantro::VectorSet3f        finite_points;
-    if (!dynamic_cloud.points.allFinite()) {
+    if (!dynamic_cloud.isEmpty() && !dynamic_cloud.points.allFinite()) {
         finite_points.resize(3, dynamic_cloud.points.cols());
         Eigen::Index point_count = 0;
         for (Eigen::Index index = 0; index < dynamic_cloud.points.cols(); ++index) {
@@ -100,67 +115,88 @@ TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_clo
         finite_points.conservativeResize(Eigen::NoChange, point_count);
         points = &finite_points;
     }
-    if (points->cols() == 0)
-        return result;
+    const auto finite_filter_end    = SteadyClock::now();
+    result.timings.finite_filter_ms = elapsedMilliseconds(finite_filter_start, finite_filter_end);
+    result.finite_point_count       = static_cast<std::size_t>(points->cols());
 
-    cilantro::ConnectedComponentExtraction3f<> cluster_extraction(*points);
-    cluster_extraction.segment(
-            cilantro::RadiusNeighborhoodSpecification<float>(
-                    static_cast<float>(params_.cluster_tolerance * params_.cluster_tolerance)),
-            cilantro::AlwaysTrueEvaluator<float>(),
-            static_cast<std::size_t>(params_.min_cluster_size),
-            static_cast<std::size_t>(params_.max_cluster_size));
-    const auto& cluster_indices = cluster_extraction.getClusterToPointIndicesMap();
-
-    std::vector<Eigen::Vector3d> centroids;
-    std::vector<Eigen::Vector3d> bboxes;
-    getCentroidsAndSizes(*points, cluster_indices, centroids, bboxes);
     std::vector<Cluster> clusters;
-    for (size_t i = 0; i < cluster_indices.size(); ++i) {
-        const Eigen::Vector3d& centroid = centroids[i];
-        const Eigen::Vector3d& bbox     = bboxes[i];
+    if (points->cols() > 0) {
+        const auto                                 clustering_start = SteadyClock::now();
+        cilantro::ConnectedComponentExtraction3f<> cluster_extraction(*points);
+        cluster_extraction.segment(
+                cilantro::RadiusNeighborhoodSpecification<float>(
+                        static_cast<float>(params_.cluster_tolerance * params_.cluster_tolerance)),
+                cilantro::AlwaysTrueEvaluator<float>(),
+                static_cast<std::size_t>(params_.min_cluster_size),
+                static_cast<std::size_t>(params_.max_cluster_size));
+        const auto& cluster_indices    = cluster_extraction.getClusterToPointIndicesMap();
+        const auto  clustering_end     = SteadyClock::now();
+        result.timings.clustering_ms   = elapsedMilliseconds(clustering_start, clustering_end);
+        result.candidate_cluster_count = cluster_indices.size();
 
-        if (bbox.maxCoeff() > params_.cluster_bbox_cutoff_size)
-            continue;
+        const auto                   state_update_start = SteadyClock::now();
+        std::vector<Eigen::Vector3d> centroids;
+        std::vector<Eigen::Vector3d> bboxes;
+        getCentroidsAndSizes(*points, cluster_indices, centroids, bboxes);
+        clusters.reserve(cluster_indices.size());
+        for (size_t i = 0; i < cluster_indices.size(); ++i) {
+            const Eigen::Vector3d& centroid = centroids[i];
+            const Eigen::Vector3d& bbox     = bboxes[i];
 
-        const int closest_idx = associateCluster(centroid, ekf_states_, params_.cluster_tolerance);
+            if (bbox.maxCoeff() > params_.cluster_bbox_cutoff_size)
+                continue;
 
-        Cluster cluster;
-        if (closest_idx >= 0) {
-            double actual_dt = current_time_sec - ekf_states_[closest_idx].time_updated;
-            if (actual_dt < 1e-6)
-                actual_dt = params_.adaptive_kf_dt;
+            const int closest_idx = associateCluster(centroid, ekf_states_, params_.cluster_tolerance);
 
-            ekfPredict(ekf_states_[closest_idx], actual_dt);
-            aekfUpdate(
-                    ekf_states_[closest_idx],
-                    centroid,
-                    params_.adaptive_kf_alpha,
-                    current_time_sec,
-                    bbox,
-                    params_.use_adaptive_kf);
-            appendToHistory(ekf_states_[closest_idx], current_time_sec, centroid);
+            Cluster cluster;
+            if (closest_idx >= 0) {
+                double actual_dt = current_time_sec - ekf_states_[closest_idx].time_updated;
+                if (actual_dt < 1e-6)
+                    actual_dt = params_.adaptive_kf_dt;
 
-            cluster.ekf_state = ekf_states_[closest_idx];
-            cluster.centroid  = centroid;
-        } else {
-            Eigen::MatrixXd Q_avg;
-            Eigen::MatrixXd R_avg;
-            calculateAverageQandR(Q_avg, R_avg);
-            EKFState new_state(9, Q_avg, R_avg, current_time_sec, bbox, next_ekf_id_++);
-            new_state.x.head(3) = centroid;
-            appendToHistory(new_state, current_time_sec, centroid);
-            ekf_states_.push_back(new_state);
+                ekfPredict(ekf_states_[closest_idx], actual_dt);
+                aekfUpdate(
+                        ekf_states_[closest_idx],
+                        centroid,
+                        params_.adaptive_kf_alpha,
+                        current_time_sec,
+                        bbox,
+                        params_.use_adaptive_kf);
+                appendToHistory(ekf_states_[closest_idx], current_time_sec, centroid);
 
-            cluster.ekf_state = new_state;
-            cluster.centroid  = centroid;
+                cluster.ekf_state = ekf_states_[closest_idx];
+                cluster.centroid  = centroid;
+            } else {
+                Eigen::MatrixXd Q_avg;
+                Eigen::MatrixXd R_avg;
+                calculateAverageQandR(Q_avg, R_avg);
+                EKFState new_state(9, Q_avg, R_avg, current_time_sec, bbox, next_ekf_id_++);
+                new_state.x.head(3) = centroid;
+                appendToHistory(new_state, current_time_sec, centroid);
+                ekf_states_.push_back(new_state);
+
+                cluster.ekf_state = new_state;
+                cluster.centroid  = centroid;
+            }
+
+            clusters.push_back(cluster);
         }
-
-        clusters.push_back(cluster);
+        const auto state_update_end    = SteadyClock::now();
+        result.timings.state_update_ms = elapsedMilliseconds(state_update_start, state_update_end);
     }
+    result.accepted_cluster_count = clusters.size();
+    result.active_track_count     = ekf_states_.size();
 
+    const auto bbox_markers_start = SteadyClock::now();
     generateBoxMarkers(clusters, result);
+    const auto bbox_markers_end    = SteadyClock::now();
+    result.timings.bbox_markers_ms = elapsedMilliseconds(bbox_markers_start, bbox_markers_end);
+
+    const auto prediction_start = SteadyClock::now();
     generatePredictions(clusters, current_time_sec, result);
+    const auto prediction_end    = SteadyClock::now();
+    result.timings.prediction_ms = elapsedMilliseconds(prediction_start, prediction_end);
+    result.timings.total_ms      = elapsedMilliseconds(total_start, prediction_end);
     return result;
 }
 
@@ -330,7 +366,7 @@ void ObstacleTracker::generatePredictions(
         double                      current_time_sec,
         TrackingResult&             result)
 {
-    int marker_id = 0;
+    std::unordered_set<int> current_marker_ids;
 
     for (const auto& cluster : clusters) {
         const auto&            ekf              = cluster.ekf_state;
@@ -379,36 +415,52 @@ void ObstacleTracker::generatePredictions(
         trajectory.is_agent        = false;
         result.trajectories.push_back(trajectory);
 
-        const double dt_vis       = params_.prediction_dt * 0.25;
-        const int    sample_count = static_cast<int>(params_.prediction_horizon / dt_vis) + 1;
+        current_marker_ids.insert(ekf.id);
 
-        visualization_msgs::msg::Marker line_marker;
-        line_marker.header.frame_id = params_.frame_id;
-        line_marker.ns              = "predicted_obstacle_trajectory";
-        line_marker.id              = marker_id++;
-        line_marker.type            = visualization_msgs::msg::Marker::LINE_STRIP;
-        line_marker.action          = visualization_msgs::msg::Marker::ADD;
-        line_marker.lifetime        = rclcpp::Duration::from_seconds(0.2);
-        line_marker.scale.x         = 0.05;
-        line_marker.color           = ekf.color;
-        line_marker.color.a         = 1.0F;
-        line_marker.points.reserve(sample_count);
-
-        for (int step = 0; step < sample_count; ++step) {
-            const double              time = step * dt_vis;
-            geometry_msgs::msg::Point point;
-            point.x = current_position.x() + velocity.x() * time;
-            point.y = current_position.y() + velocity.y() * time;
-            point.z = current_position.z() + velocity.z() * time;
-            line_marker.points.push_back(point);
-        }
-        result.prediction_markers.markers.push_back(line_marker);
+        visualization_msgs::msg::Marker arrow;
+        arrow.header.frame_id    = params_.frame_id;
+        arrow.ns                 = "predicted_obstacle_trajectory";
+        arrow.id                 = ekf.id;
+        arrow.type               = visualization_msgs::msg::Marker::ARROW;
+        arrow.action             = visualization_msgs::msg::Marker::ADD;
+        arrow.lifetime           = rclcpp::Duration::from_seconds(0.0);
+        arrow.pose.orientation.w = 1.0;
+        arrow.scale.x            = 0.10;
+        arrow.scale.y            = 0.20;
+        arrow.scale.z            = 0.25;
+        arrow.color              = ekf.color;
+        arrow.color.a            = 1.0F;
+        arrow.points.resize(2);
+        arrow.points[0].x = current_position.x();
+        arrow.points[0].y = current_position.y();
+        arrow.points[0].z = current_position.z();
+        arrow.points[1].x = current_position.x() + velocity.x() * params_.prediction_horizon;
+        arrow.points[1].y = current_position.y() + velocity.y() * params_.prediction_horizon;
+        arrow.points[1].z = current_position.z() + velocity.z() * params_.prediction_horizon;
+        result.prediction_markers.markers.push_back(arrow);
     }
+
+    for (const int id : previous_prediction_marker_ids_) {
+        if (current_marker_ids.count(id) != 0)
+            continue;
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = params_.frame_id;
+        marker.ns              = "predicted_obstacle_trajectory";
+        marker.id              = id;
+        marker.action          = visualization_msgs::msg::Marker::DELETE;
+        result.prediction_markers.markers.push_back(marker);
+    }
+    previous_prediction_marker_ids_ = std::move(current_marker_ids);
 }
 
 void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, TrackingResult& result)
 {
+    std::unordered_set<int> current_marker_ids;
+
     for (const auto& cluster : clusters) {
+        current_marker_ids.insert(cluster.ekf_state.id);
+
         const double cx = cluster.centroid.x();
         const double cy = cluster.centroid.y();
         const double cz = cluster.centroid.z();
@@ -422,7 +474,7 @@ void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, T
         wire.id                 = cluster.ekf_state.id;
         wire.type               = visualization_msgs::msg::Marker::LINE_LIST;
         wire.action             = visualization_msgs::msg::Marker::ADD;
-        wire.lifetime           = rclcpp::Duration::from_seconds(0.2);
+        wire.lifetime           = rclcpp::Duration::from_seconds(0.0);
         wire.scale.x            = 0.06;
         wire.color              = cluster.ekf_state.color;
         wire.color.a            = 1.0F;
@@ -462,7 +514,7 @@ void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, T
         sphere.id                 = cluster.ekf_state.id;
         sphere.type               = visualization_msgs::msg::Marker::SPHERE;
         sphere.action             = visualization_msgs::msg::Marker::ADD;
-        sphere.lifetime           = rclcpp::Duration::from_seconds(0.2);
+        sphere.lifetime           = rclcpp::Duration::from_seconds(0.0);
         sphere.pose.position.x    = cx;
         sphere.pose.position.y    = cy;
         sphere.pose.position.z    = cz;
@@ -474,6 +526,26 @@ void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, T
         sphere.color.a            = 1.0F;
         result.bbox_markers.markers.push_back(sphere);
     }
+
+    for (const int id : previous_bbox_marker_ids_) {
+        if (current_marker_ids.count(id) != 0)
+            continue;
+
+        visualization_msgs::msg::Marker bbox_delete;
+        bbox_delete.header.frame_id = params_.frame_id;
+        bbox_delete.ns              = "obstacle_bbox";
+        bbox_delete.id              = id;
+        bbox_delete.action          = visualization_msgs::msg::Marker::DELETE;
+        result.bbox_markers.markers.push_back(bbox_delete);
+
+        visualization_msgs::msg::Marker centroid_delete;
+        centroid_delete.header.frame_id = params_.frame_id;
+        centroid_delete.ns              = "obstacle_centroid";
+        centroid_delete.id              = id;
+        centroid_delete.action          = visualization_msgs::msg::Marker::DELETE;
+        result.bbox_markers.markers.push_back(centroid_delete);
+    }
+    previous_bbox_marker_ids_ = std::move(current_marker_ids);
 }
 
 std::vector<TrackedObstacle> ObstacleTracker::getTrackedObstacles() const

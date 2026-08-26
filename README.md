@@ -16,15 +16,16 @@ git submodule update --init --recursive
 
 ## Interfaces
 
-The detector subscribes to `deskewed_cloud` by default and publishes:
+The detector subscribes to `topics.deskewed_cloud_topic` and publishes:
 
-- `dynamic_points` (`sensor_msgs/PointCloud2`)
+- `topics.dynamic_cloud_topic` (`sensor_msgs/PointCloud2`)
 - `static_points` (`sensor_msgs/PointCloud2`)
 
-Static points are only materialized and published when `static_points` has at
-least one subscriber.
+An empty `topics.dynamic_cloud_topic` uses the shared C++ default `/dynamic_point_detector/dynamic_points` for both detector output and tracker input.
 
-The tracker subscribes to `dynamic_cloud` and publishes:
+Static points are only available when `detector.publish_static_cloud` is enabled, and are only materialized when `static_points` has at least one subscriber.
+
+The tracker subscribes to the same resolved dynamic-cloud topic and publishes:
 
 - `obstacle_predicted_traj` (`dynamic_obstacle_tracker/msg/DynamicObstacleTrajectory`)
 - `obstacle_bbox_marker` (`visualization_msgs/MarkerArray`)
@@ -80,22 +81,21 @@ ros2 launch dynamic_obstacle_tracker dynamic_obstacle_pipeline_composed.launch.p
   input_cloud_topic:=/my/deskewed_cloud
 ```
 
+In either complete pipeline launch, `input_cloud_topic` only overrides the detector's raw deskewed input. The detector output and tracker input use `topics.dynamic_cloud_topic`, falling back to
+`/dynamic_point_detector/dynamic_points` when it is empty. When launching only the tracker, its
+`input_cloud_topic` argument overrides `topics.dynamic_cloud_topic`; an empty argument follows the same YAML then C++-default fallback. Use an absolute `topics.dynamic_cloud_topic` when connecting nodes in different namespaces.
+
 ## Frame contract
 
-`frame.tracking_frame` is the single coordinate frame used by the detector output, tracker state, velocities, and
-predicted trajectories. It must be a continuous fixed frame such as `odom` or a continuous `world` frame, not
-`base_link` or a sensor frame.
+`frame.tracking_frame` is the single coordinate frame used by the detector output, tracker state, velocities, and predicted trajectories. It must be a continuous fixed frame such as `odom` or a continuous `world` frame, not `base_link` or a sensor frame.
 
-The expected detector input is already expressed in `tracking_frame`. If its `header.frame_id` differs, the detector
-looks up `tracking_frame <- input_frame` at the point-cloud timestamp and transforms the points. A missing transform
-drops the scan; the implementation does not fall back to the latest transform.
+The expected detector input is already expressed in `tracking_frame`. If its `header.frame_id` differs, the detector looks up `tracking_frame <- input_frame` at the point-cloud timestamp and transforms the points. A missing transform drops the scan; the implementation does not fall back to the latest transform.
 
 The detector looks up the configured `frame.sensor_frame`, (`os_sensor` for Ouster LiDARs for example) in `tracking_frame` at the cloud timestamp and uses its translation as the DDA ray origin. A complete timestamped TF tree is therefore required. A missing cloud-frame or sensor-frame transform drops the scan; neither lookup falls back to the latest transform.
 
 The tracker does not transform or relabel its input. It rejects dynamic clouds whose frame differs from `tracking_frame` and advances the EKF using the cloud timestamp.
 
-Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector
-preprocessing/output assembly, and HMM-MOS ray casting, EDF, belief update, convolution, and segmentation.
+Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector preprocessing/output assembly, and HMM-MOS ray casting, EDF, belief update, convolution, and segmentation. Set `tracker.debug: true` to report input/cluster/track counts and timings for ROS conversion, clustering, EKF state updates, marker and prediction generation, publication, and the complete callback.
 
 ## Dynamic-point detector
 
@@ -104,14 +104,35 @@ This follows the voxel-block spatial hashing organization and hash constants des
 
 Each scan is processed as one batch:
 
-1. Filter invalid, range-excluded, and optionally ground points.
-2. Aggregate endpoint hits and traverse all observed voxels with 3D DDA rays.
-3. Construct a Gaussian Euclidean distance field from the current and previous occupied voxelized scans.
-4. Update each observed voxel's three-state belief with the fixed HMM transition matrix and soft EDF likelihood.
-5. Seed motion from confident occupied/free state changes.
-6. Median-filter a spatial convolution score and accumulate it over the local scan window.
-7. Apply Otsu thresholding, previous-scan persistence, and current-scan nearest-neighbour dilation.
-8. Publish the original current-scan points belonging to the resulting dynamic voxels.
+1. Reject non-finite points and points outside `minimum_range`/`maximum_range`. When ground removal is enabled, reject points below `ground_height + ground_clearance`; this is an absolute Z threshold in `tracking_frame`, not a fitted ground plane.
+2. Quantize accepted endpoints into voxels, aggregate repeated hits, and traverse observed free-space voxels from the timestamped sensor origin with 3D DDA rays.
+3. Construct a Gaussian Euclidean distance field from current and previous occupied scan voxels using a cilantro KD-tree.
+4. Update every observed voxel's three-state belief using the fixed HMM transition model and soft EDF likelihood, committing a state only when its probability exceeds `belief_threshold`.
+5. Seed motion from confident occupied-to-free and free-to-occupied state changes.
+6. Apply the HMM-MOS spatial convolution, a `3 x 3 x 3` median filter, and temporal accumulation over `local_window_size` scans.
+7. Segment the accumulated scores using Otsu thresholding, retain eligible previous-scan detections, and dilate to neighbouring current-hit voxels.
+8. Publish the original, non-voxelized points whose endpoint voxels were classified as dynamic. Static output contains the other accepted points when requested.
+
+The sparse map follows the sensor rather than remaining centered at the launch origin. `active_radius` removes blocks outside a sensor-centered sphere during periodic garbage collection, while `global_window_size` also removes blocks that have not been observed recently. `active_radius` should therefore be larger than `maximum_range`.
+
+This is geometric motion segmentation: an object must produce a sufficiently persistent occupancy change to be detected. It does not classify semantic motion inside a voxel. Cloud deskew errors, inaccurate timestamped TF, odometry drift, coarse voxels, or aggressive thresholds can respectively create false changes or suppress slow/small motion.
+
+## Dynamic-obstacle tracker
+
+The tracker consumes only the dynamic points produced by the detector (or an equivalent cloud supplied directly). It does not run another motion classifier or transform the cloud.
+
+For each accepted cloud it:
+
+1. Removes non-finite points and uses cilantro radius-neighbour connected components with `cluster_tolerance`, `min_cluster_size`, and `max_cluster_size`.
+2. Computes each component's min/max extent and center. The published obstacle box is deliberately cubic, using the component's largest axis as all three box dimensions, and components larger than `cluster_bbox_cutoff_size` are rejected.
+3. Associates a component with the nearest existing state inside `cluster_tolerance`, or creates a new state when none matches.
+4. Predicts and corrects a nine-state constant-acceleration EKF `[position, velocity, acceleration]`. With `use_adaptive_kf`, its process and measurement covariance estimates are updated from the current innovation; box size is exponentially smoothed.
+5. Keeps unmatched states internally until `time_to_delete_old_obstacles`, but only current accepted components produce boxes and predictions in that scan.
+6. After `min_observations_for_prediction`, publishes a prediction when EKF speed exceeds `cutoff_length_threshold`. Velocity is capped at `max_obstacle_velocity`, and the output trajectory is a constant-velocity piecewise polynomial from the cloud time through `prediction_horizon`.
+
+Bounding-box and centroid markers use the EKF track ID. Prediction markers are arrows from the current cluster center to the predicted position at the end of `prediction_horizon`, so arrow direction shows velocity direction and arrow length shows predicted displacement.
+
+The trajectory topic contains one `DynamicObstacleTrajectory` message per eligible obstacle rather than an array. Its position, cubic bounding box, covariance diagonals, polynomial coefficients, and times are all expressed in `tracking_frame` and stamped with the input cloud time.
 
 ## Attribution and disclaimer
 
