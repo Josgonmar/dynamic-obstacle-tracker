@@ -7,7 +7,7 @@ frame:
   sensor_frame: os_sensor
 
 detector:
-  debug: true # Publish per-scan timing breakdowns to the ROS log
+  debug: false # Publish per-scan timing breakdowns to the ROS log
   publish_static_cloud: false
   tf_timeout: 0.05
 
@@ -36,28 +36,34 @@ detector:
     histogram_bins: 100
 
 tracker:
-  debug: true # Publish per-scan tracker timing breakdowns to the ROS log
+  debug: false # Publish per-scan tracker timing breakdowns to the ROS log
+
+  preprocessing:
+    voxel_size: 0.0 # Set to 0.0 to cluster every dynamic point
 
   clustering:
     cluster_tolerance: 1.0
-    min_cluster_size: 20
+    min_cluster_size: 20 # Counted after tracker voxel downsampling
     max_cluster_size: 200
     cluster_bbox_cutoff_size: 2.0
+
+  association:
+    centroid_measurement_noise: 0.10 # Isotropic standard-deviation floor in metres
+    mahalanobis_gate_squared: 11.345 # 99% chi-square gate for a 3D centroid
+    maximum_association_distance: 1.0 # Hard Euclidean gate in metres
 
   tracking:
     use_adaptive_kf: true
     adaptive_kf_alpha: 0.90
-    adaptive_kf_dt: 0.1
-    time_to_delete_old_obstacles: 5.0
+    time_to_delete_old_obstacles: 0.5 # Confirmed-track coasting time
+    confirmation_hits: 3
+    tentative_max_missed_scans: 1
+    max_obstacle_acceleration: 2.0
     velocity_threshold: 0.8
-    acceleration_threshold: 2.0
     max_history_size: 30
 
   prediction:
     prediction_horizon: 1.0
-    prediction_dt: 0.1
     cutoff_length_threshold: 0.1
-    degree_for_pwp: 3
-    degree_for_poly: 5
     min_observations_for_prediction: 5
     max_obstacle_velocity: 2.0

@@ -53,6 +53,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(dynamic_obstacle_tracker_component SHARED
   src/ros2/dynamic_obstacle_tracker_node.cpp
+  src/tracker/data_association.cpp
   src/tracker/obstacle_tracker.cpp
 )
 

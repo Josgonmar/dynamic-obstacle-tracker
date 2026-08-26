@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cilantro/clustering/connected_component_extraction.hpp>
+#include <cilantro/core/grid_downsampler.hpp>
 #include <cmath>
 #include <cstdlib>
 #include <geometry_msgs/msg/point.hpp>
 #include <limits>
 #include <stdexcept>
+
+#include "dynamic_obstacle_tracker/tracker/data_association.hpp"
 
 namespace dynamic_obstacle_tracker {
 namespace {
@@ -66,6 +69,7 @@ EKFState::EKFState(
     Q            = Q_init;
     R            = R_init;
     time_updated = time;
+    state_time   = time;
     bbox         = bbox_init;
     id           = id_val;
 
@@ -81,8 +85,36 @@ ObstacleTracker::ObstacleTracker(const ObstacleTrackerParams& params, rclcpp::Lo
 {
     if (!std::isfinite(params_.cluster_tolerance) || params_.cluster_tolerance <= 0.0)
         throw std::invalid_argument("cluster_tolerance must be finite and positive");
+    if (!std::isfinite(params_.tracking_voxel_size) || params_.tracking_voxel_size < 0.0)
+        throw std::invalid_argument("tracking_voxel_size must be finite and non-negative");
     if (params_.min_cluster_size < 1 || params_.max_cluster_size < params_.min_cluster_size)
         throw std::invalid_argument("cluster sizes must satisfy 1 <= min_cluster_size <= max_cluster_size");
+    if (!std::isfinite(params_.cluster_bbox_cutoff_size) || params_.cluster_bbox_cutoff_size <= 0.0)
+        throw std::invalid_argument("cluster_bbox_cutoff_size must be finite and positive");
+    if (!std::isfinite(params_.centroid_measurement_noise) || params_.centroid_measurement_noise <= 0.0)
+        throw std::invalid_argument("centroid_measurement_noise must be finite and positive");
+    if (!std::isfinite(params_.mahalanobis_gate_squared) || params_.mahalanobis_gate_squared <= 0.0)
+        throw std::invalid_argument("mahalanobis_gate_squared must be finite and positive");
+    if (!std::isfinite(params_.maximum_association_distance) || params_.maximum_association_distance <= 0.0)
+        throw std::invalid_argument("maximum_association_distance must be finite and positive");
+    if (params_.confirmation_hits < 1)
+        throw std::invalid_argument("confirmation_hits must be positive");
+    if (params_.tentative_max_missed_scans < 0)
+        throw std::invalid_argument("tentative_max_missed_scans must be non-negative");
+    if (!std::isfinite(params_.time_to_delete_old_obstacles) || params_.time_to_delete_old_obstacles <= 0.0)
+        throw std::invalid_argument("time_to_delete_old_obstacles must be finite and positive");
+    if (!std::isfinite(params_.adaptive_kf_alpha) || params_.adaptive_kf_alpha < 0.0 || params_.adaptive_kf_alpha > 1.0)
+        throw std::invalid_argument("adaptive_kf_alpha must be finite and in [0, 1]");
+    if (params_.max_history_size < 1 || params_.min_observations_for_prediction < 1)
+        throw std::invalid_argument("history and prediction observation counts must be positive");
+    if (!std::isfinite(params_.prediction_horizon) || params_.prediction_horizon <= 0.0)
+        throw std::invalid_argument("prediction_horizon must be finite and positive");
+    if (!std::isfinite(params_.cutoff_length_threshold) || params_.cutoff_length_threshold < 0.0)
+        throw std::invalid_argument("cutoff_length_threshold must be finite and non-negative");
+    if (!std::isfinite(params_.max_obstacle_velocity) || params_.max_obstacle_velocity <= 0.0)
+        throw std::invalid_argument("max_obstacle_velocity must be finite and positive");
+    if (!std::isfinite(params_.max_obstacle_acceleration) || params_.max_obstacle_acceleration <= 0.0)
+        throw std::invalid_argument("max_obstacle_acceleration must be finite and positive");
 }
 
 void ObstacleTracker::setFrameId(std::string frame_id)
@@ -100,7 +132,6 @@ TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_clo
     deleteOldStates(current_time_sec);
     const auto cleanup_end          = SteadyClock::now();
     result.timings.state_cleanup_ms = elapsedMilliseconds(cleanup_start, cleanup_end);
-    result.active_track_count       = ekf_states_.size();
 
     const auto                   finite_filter_start = SteadyClock::now();
     const cilantro::VectorSet3f* points              = &dynamic_cloud.points;
@@ -119,10 +150,22 @@ TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_clo
     result.timings.finite_filter_ms = elapsedMilliseconds(finite_filter_start, finite_filter_end);
     result.finite_point_count       = static_cast<std::size_t>(points->cols());
 
-    std::vector<Cluster> clusters;
-    if (points->cols() > 0) {
+    const auto                   downsampling_start = SteadyClock::now();
+    const cilantro::VectorSet3f* clustering_points  = points;
+    cilantro::VectorSet3f        downsampled_points;
+    if (params_.tracking_voxel_size > 0.0 && points->cols() > 0) {
+        cilantro::PointsGridDownsampler3f(*points, static_cast<float>(params_.tracking_voxel_size), false)
+                .getDownsampledPoints(downsampled_points);
+        clustering_points = &downsampled_points;
+    }
+    const auto downsampling_end    = SteadyClock::now();
+    result.timings.downsampling_ms = elapsedMilliseconds(downsampling_start, downsampling_end);
+    result.downsampled_point_count = static_cast<std::size_t>(clustering_points->cols());
+
+    std::vector<ClusterDetection> detections;
+    if (clustering_points->cols() > 0) {
         const auto                                 clustering_start = SteadyClock::now();
-        cilantro::ConnectedComponentExtraction3f<> cluster_extraction(*points);
+        cilantro::ConnectedComponentExtraction3f<> cluster_extraction(*clustering_points);
         cluster_extraction.segment(
                 cilantro::RadiusNeighborhoodSpecification<float>(
                         static_cast<float>(params_.cluster_tolerance * params_.cluster_tolerance)),
@@ -134,66 +177,111 @@ TrackingResult ObstacleTracker::update(const cilantro::PointCloud3f& dynamic_clo
         result.timings.clustering_ms   = elapsedMilliseconds(clustering_start, clustering_end);
         result.candidate_cluster_count = cluster_indices.size();
 
-        const auto                   state_update_start = SteadyClock::now();
-        std::vector<Eigen::Vector3d> centroids;
-        std::vector<Eigen::Vector3d> bboxes;
-        getCentroidsAndSizes(*points, cluster_indices, centroids, bboxes);
-        clusters.reserve(cluster_indices.size());
-        for (size_t i = 0; i < cluster_indices.size(); ++i) {
-            const Eigen::Vector3d& centroid = centroids[i];
-            const Eigen::Vector3d& bbox     = bboxes[i];
+        const auto feature_start  = SteadyClock::now();
+        detections                = extractDetections(*clustering_points, cluster_indices);
+        const auto feature_end    = SteadyClock::now();
+        result.timings.feature_ms = elapsedMilliseconds(feature_start, feature_end);
+    }
+    result.accepted_cluster_count = detections.size();
 
-            if (bbox.maxCoeff() > params_.cluster_bbox_cutoff_size)
+    const auto kf_prediction_start = SteadyClock::now();
+    predictStates(current_time_sec);
+    const auto kf_prediction_end    = SteadyClock::now();
+    result.timings.kf_prediction_ms = elapsedMilliseconds(kf_prediction_start, kf_prediction_end);
+
+    const auto      association_start = SteadyClock::now();
+    Eigen::MatrixXd costs
+            = Eigen::MatrixXd::Constant(ekf_states_.size(), detections.size(), params_.mahalanobis_gate_squared);
+    for (Eigen::Index track_index = 0; track_index < costs.rows(); ++track_index) {
+        for (Eigen::Index detection_index = 0; detection_index < costs.cols(); ++detection_index) {
+            const Eigen::Vector3d innovation = detections[static_cast<std::size_t>(detection_index)].centroid
+                                             - ekf_states_[static_cast<std::size_t>(track_index)].x.head<3>();
+            if (innovation.norm() > params_.maximum_association_distance)
                 continue;
 
-            const int closest_idx = associateCluster(centroid, ekf_states_, params_.cluster_tolerance);
-
-            Cluster cluster;
-            if (closest_idx >= 0) {
-                double actual_dt = current_time_sec - ekf_states_[closest_idx].time_updated;
-                if (actual_dt < 1e-6)
-                    actual_dt = params_.adaptive_kf_dt;
-
-                ekfPredict(ekf_states_[closest_idx], actual_dt);
-                aekfUpdate(
-                        ekf_states_[closest_idx],
-                        centroid,
-                        params_.adaptive_kf_alpha,
-                        current_time_sec,
-                        bbox,
-                        params_.use_adaptive_kf);
-                appendToHistory(ekf_states_[closest_idx], current_time_sec, centroid);
-
-                cluster.ekf_state = ekf_states_[closest_idx];
-                cluster.centroid  = centroid;
-            } else {
-                Eigen::MatrixXd Q_avg;
-                Eigen::MatrixXd R_avg;
-                calculateAverageQandR(Q_avg, R_avg);
-                EKFState new_state(9, Q_avg, R_avg, current_time_sec, bbox, next_ekf_id_++);
-                new_state.x.head(3) = centroid;
-                appendToHistory(new_state, current_time_sec, centroid);
-                ekf_states_.push_back(new_state);
-
-                cluster.ekf_state = new_state;
-                cluster.centroid  = centroid;
-            }
-
-            clusters.push_back(cluster);
+            const double distance = mahalanobisDistanceSquared(
+                    ekf_states_[static_cast<std::size_t>(track_index)],
+                    detections[static_cast<std::size_t>(detection_index)]);
+            if (std::isfinite(distance) && distance < params_.mahalanobis_gate_squared)
+                costs(track_index, detection_index) = distance;
         }
-        const auto state_update_end    = SteadyClock::now();
-        result.timings.state_update_ms = elapsedMilliseconds(state_update_start, state_update_end);
     }
-    result.accepted_cluster_count = clusters.size();
-    result.active_track_count     = ekf_states_.size();
+    const std::vector<int> assignment      = solveHungarianAssignment(costs, params_.mahalanobis_gate_squared);
+    const auto             association_end = SteadyClock::now();
+    result.timings.association_ms          = elapsedMilliseconds(association_start, association_end);
+
+    const auto        state_update_start = SteadyClock::now();
+    std::vector<bool> matched_detections(detections.size(), false);
+    const std::size_t existing_track_count = ekf_states_.size();
+    for (std::size_t track_index = 0; track_index < existing_track_count; ++track_index) {
+        EKFState& state           = ekf_states_[track_index];
+        const int detection_index = assignment[track_index];
+        if (detection_index < 0) {
+            ++state.miss_count;
+            continue;
+        }
+
+        const ClusterDetection& detection = detections[static_cast<std::size_t>(detection_index)];
+        if (!aekfUpdate(
+                    state,
+                    detection.centroid,
+                    detection.centroid_covariance,
+                    params_.adaptive_kf_alpha,
+                    current_time_sec,
+                    detection.bbox,
+                    detection.bbox_center_offset,
+                    params_.use_adaptive_kf)) {
+            ++state.miss_count;
+            continue;
+        }
+        constrainMotion(state);
+        appendToHistory(state, current_time_sec, detection.centroid);
+        ++state.hit_count;
+        state.miss_count = 0;
+        state.confirmed  = state.confirmed || state.hit_count >= params_.confirmation_hits;
+        matched_detections[static_cast<std::size_t>(detection_index)] = true;
+        ++result.matched_track_count;
+    }
+
+    for (std::size_t detection_index = 0; detection_index < detections.size(); ++detection_index) {
+        if (matched_detections[detection_index])
+            continue;
+
+        const ClusterDetection& detection = detections[detection_index];
+        Eigen::MatrixXd         Q_avg;
+        Eigen::MatrixXd         R_avg;
+        calculateAverageQandR(Q_avg, R_avg);
+        EKFState new_state(9, Q_avg, R_avg, current_time_sec, detection.bbox, next_ekf_id_++);
+        new_state.x.head<3>()               = detection.centroid;
+        new_state.P.topLeftCorner<3, 3>()   = detection.centroid_covariance + R_avg;
+        new_state.bbox_center_offset        = detection.bbox_center_offset;
+        new_state.last_observed_bbox_center = detection.centroid + detection.bbox_center_offset;
+        new_state.confirmed                 = params_.confirmation_hits <= 1;
+        appendToHistory(new_state, current_time_sec, detection.centroid);
+        ekf_states_.push_back(std::move(new_state));
+        ++result.new_track_count;
+    }
+
+    deleteOldStates(current_time_sec);
+    const auto state_update_end    = SteadyClock::now();
+    result.timings.state_update_ms = elapsedMilliseconds(state_update_start, state_update_end);
+
+    result.active_track_count = ekf_states_.size();
+    for (const auto& state : ekf_states_) {
+        if (!state.confirmed)
+            continue;
+        ++result.confirmed_track_count;
+        if (state.miss_count > 0)
+            ++result.coasting_track_count;
+    }
 
     const auto bbox_markers_start = SteadyClock::now();
-    generateBoxMarkers(clusters, result);
+    generateBoxMarkers(result);
     const auto bbox_markers_end    = SteadyClock::now();
     result.timings.bbox_markers_ms = elapsedMilliseconds(bbox_markers_start, bbox_markers_end);
 
     const auto prediction_start = SteadyClock::now();
-    generatePredictions(clusters, current_time_sec, result);
+    generatePredictions(current_time_sec, result);
     const auto prediction_end    = SteadyClock::now();
     result.timings.prediction_ms = elapsedMilliseconds(prediction_start, prediction_end);
     result.timings.total_ms      = elapsedMilliseconds(total_start, prediction_end);
@@ -225,23 +313,35 @@ void ObstacleTracker::ekfPredict(EKFState& state, double dt)
     state.P = F * state.P.selfadjointView<Eigen::Lower>() * F.transpose() + state.Q;
 }
 
-void ObstacleTracker::aekfUpdate(
+bool ObstacleTracker::aekfUpdate(
         EKFState&              state,
-        const Eigen::VectorXd& z,
+        const Eigen::Vector3d& z,
+        const Eigen::Matrix3d& measurement_covariance,
         double                 alpha,
         double                 time_updated,
         const Eigen::Vector3d& bbox,
+        const Eigen::Vector3d& bbox_center_offset,
         bool                   use_adaptive)
 {
-    Eigen::MatrixXd H(3, 9);
-    H << 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0;
+    Eigen::Matrix<double, 3, 9> H = Eigen::Matrix<double, 3, 9>::Zero();
+    H.leftCols<3>().setIdentity();
 
-    const Eigen::VectorXd innovation            = z - H * state.x;
-    const Eigen::MatrixXd innovation_covariance = H * state.P * H.transpose() + state.R;
-    const Eigen::MatrixXd gain                  = state.P * H.transpose() * innovation_covariance.inverse();
+    const Eigen::Vector3d innovation                       = z - H * state.x;
+    Eigen::Matrix3d       effective_measurement_covariance = state.R + measurement_covariance;
+    effective_measurement_covariance
+            = 0.5 * (effective_measurement_covariance + effective_measurement_covariance.transpose());
+    Eigen::Matrix3d innovation_covariance
+            = H * state.P.selfadjointView<Eigen::Lower>() * H.transpose() + effective_measurement_covariance;
+    innovation_covariance.diagonal().array() += 1e-9;
+    const Eigen::LDLT<Eigen::Matrix3d> decomposition(innovation_covariance);
+    if (decomposition.info() != Eigen::Success || decomposition.vectorD().minCoeff() <= 0.0)
+        return false;
+
+    const Eigen::MatrixXd gain = state.P.selfadjointView<Eigen::Lower>() * H.transpose()
+                               * decomposition.solve(Eigen::Matrix3d::Identity());
 
     state.x                        = state.x + gain * innovation;
-    const Eigen::VectorXd residual = z - H * state.x;
+    const Eigen::Vector3d residual = z - H * state.x;
 
     if (use_adaptive) {
         state.R = alpha * state.R + (1.0 - alpha) * (residual * residual.transpose() + H * state.P * H.transpose());
@@ -251,71 +351,75 @@ void ObstacleTracker::aekfUpdate(
         state.Q = Eigen::MatrixXd::Identity(9, 9) * 0.01;
     }
 
-    state.P            = (Eigen::MatrixXd::Identity(9, 9) - gain * H) * state.P;
-    state.time_updated = time_updated;
-    state.bbox         = 0.5 * state.bbox + 0.5 * bbox;
+    const Eigen::MatrixXd identity_minus_gain_h = Eigen::MatrixXd::Identity(9, 9) - gain * H;
+    state.P = identity_minus_gain_h * state.P.selfadjointView<Eigen::Lower>() * identity_minus_gain_h.transpose()
+            + gain * effective_measurement_covariance * gain.transpose();
+    state.P                         = 0.5 * (state.P + state.P.transpose());
+    state.time_updated              = time_updated;
+    state.state_time                = time_updated;
+    state.bbox                      = 0.5 * state.bbox + 0.5 * bbox;
+    state.bbox_center_offset        = 0.5 * state.bbox_center_offset + 0.5 * bbox_center_offset;
+    state.last_observed_bbox_center = z + bbox_center_offset;
+    return true;
 }
 
-int ObstacleTracker::associateCluster(
-        const Eigen::Vector3d&       centroid,
-        const std::vector<EKFState>& states,
-        double                       tolerance)
+double ObstacleTracker::mahalanobisDistanceSquared(const EKFState& state, const ClusterDetection& detection)
 {
-    double min_distance = tolerance;
-    int    closest_idx  = -1;
+    const Eigen::Vector3d innovation      = detection.centroid - state.x.head<3>();
+    Eigen::Matrix3d innovation_covariance = state.P.topLeftCorner<3, 3>() + state.R + detection.centroid_covariance;
+    innovation_covariance                 = 0.5 * (innovation_covariance + innovation_covariance.transpose());
+    innovation_covariance.diagonal().array() += 1e-9;
 
-    for (size_t i = 0; i < states.size(); ++i) {
-        const Eigen::Vector3d state_position(states[i].x[0], states[i].x[1], states[i].x[2]);
-        const double          distance = (centroid - state_position).norm();
-        if (distance < min_distance) {
-            min_distance = distance;
-            closest_idx  = static_cast<int>(i);
-        }
-    }
-    return closest_idx;
-}
+    const Eigen::LDLT<Eigen::Matrix3d> decomposition(innovation_covariance);
+    if (decomposition.info() != Eigen::Success || decomposition.vectorD().minCoeff() <= 0.0)
+        return std::numeric_limits<double>::infinity();
 
-Eigen::VectorXd ObstacleTracker::polyfit(const std::vector<double>& t, const std::vector<double>& y, int degree)
-{
-    const int n = static_cast<int>(t.size());
-    if (degree >= n)
-        degree = n - 1;
-
-    Eigen::MatrixXd X(n, degree + 1);
-    Eigen::VectorXd Y(n);
-    for (int i = 0; i < n; ++i) {
-        Y(i) = y[i];
-        for (int j = 0; j <= degree; ++j) X(i, j) = std::pow(t[i], degree - j);
-    }
-    return (X.transpose() * X).ldlt().solve(X.transpose() * Y);
-}
-
-double ObstacleTracker::calculateVariance(
-        const std::vector<double>& t,
-        const std::vector<double>& y,
-        const Eigen::VectorXd&     beta,
-        int                        degree)
-{
-    const int n            = static_cast<int>(t.size());
-    double    residual_sum = 0.0;
-    for (int i = 0; i < n; ++i) {
-        double fitted = 0.0;
-        for (int j = 0; j <= degree; ++j) fitted += beta(j) * std::pow(t[i], degree - j);
-        const double residual = y[i] - fitted;
-        residual_sum += residual * residual;
-    }
-    const int denominator = n - degree - 1;
-    return (denominator > 0) ? residual_sum / denominator : 0.0;
+    const double distance = innovation.dot(decomposition.solve(innovation));
+    return distance >= 0.0 ? distance : std::numeric_limits<double>::infinity();
 }
 
 void ObstacleTracker::deleteOldStates(double current_time)
 {
     for (auto it = ekf_states_.begin(); it != ekf_states_.end();) {
-        if (current_time - it->time_updated > params_.time_to_delete_old_obstacles)
+        const bool timed_out         = current_time - it->time_updated > params_.time_to_delete_old_obstacles;
+        const bool tentative_expired = !it->confirmed && it->miss_count > params_.tentative_max_missed_scans;
+        if (timed_out || tentative_expired)
             it = ekf_states_.erase(it);
         else
             ++it;
     }
+}
+
+void ObstacleTracker::predictStates(double current_time)
+{
+    for (auto& state : ekf_states_) {
+        const double dt = current_time - state.state_time;
+        if (dt <= 1e-6)
+            continue;
+        ekfPredict(state, dt);
+        constrainMotion(state);
+        state.state_time = current_time;
+    }
+}
+
+void ObstacleTracker::constrainMotion(EKFState& state) const
+{
+    auto         velocity = state.x.segment<3>(3);
+    const double speed    = velocity.norm();
+    if (speed > params_.max_obstacle_velocity)
+        velocity *= params_.max_obstacle_velocity / speed;
+
+    auto         acceleration      = state.x.segment<3>(6);
+    const double acceleration_norm = acceleration.norm();
+    if (acceleration_norm > params_.max_obstacle_acceleration)
+        acceleration *= params_.max_obstacle_acceleration / acceleration_norm;
+}
+
+Eigen::Vector3d ObstacleTracker::outputPosition(const EKFState& state)
+{
+    if (state.miss_count == 0)
+        return state.last_observed_bbox_center;
+    return state.x.head<3>() + state.bbox_center_offset;
 }
 
 void ObstacleTracker::calculateAverageQandR(Eigen::MatrixXd& Q_avg, Eigen::MatrixXd& R_avg)
@@ -336,42 +440,65 @@ void ObstacleTracker::calculateAverageQandR(Eigen::MatrixXd& Q_avg, Eigen::Matri
     }
 }
 
-void ObstacleTracker::getCentroidsAndSizes(
+std::vector<ClusterDetection> ObstacleTracker::extractDetections(
         const Eigen::Matrix<float, 3, Eigen::Dynamic>& cloud,
-        const std::vector<std::vector<std::size_t>>&   indices,
-        std::vector<Eigen::Vector3d>&                  centroids,
-        std::vector<Eigen::Vector3d>&                  bboxes)
+        const std::vector<std::vector<std::size_t>>&   indices) const
 {
-    centroids.reserve(indices.size());
-    bboxes.reserve(indices.size());
+    std::vector<ClusterDetection> detections;
+    detections.reserve(indices.size());
+    const double noise_variance = params_.centroid_measurement_noise * params_.centroid_measurement_noise;
 
     for (const auto& cluster : indices) {
+        if (cluster.empty())
+            continue;
+
         Eigen::Vector3d min_point = Eigen::Vector3d::Constant(std::numeric_limits<double>::max());
         Eigen::Vector3d max_point = Eigen::Vector3d::Constant(std::numeric_limits<double>::lowest());
+        Eigen::Vector3d centroid  = Eigen::Vector3d::Zero();
 
         for (const std::size_t index : cluster) {
             const Eigen::Vector3d position = cloud.col(static_cast<Eigen::Index>(index)).cast<double>();
             min_point                      = min_point.cwiseMin(position);
             max_point                      = max_point.cwiseMax(position);
+            centroid += position;
+        }
+        centroid /= static_cast<double>(cluster.size());
+
+        const Eigen::Vector3d raw_bbox = max_point - min_point;
+        if (raw_bbox.maxCoeff() > params_.cluster_bbox_cutoff_size)
+            continue;
+
+        Eigen::Matrix3d sample_covariance = Eigen::Matrix3d::Zero();
+        if (cluster.size() > 1) {
+            for (const std::size_t index : cluster) {
+                const Eigen::Vector3d delta = cloud.col(static_cast<Eigen::Index>(index)).cast<double>() - centroid;
+                sample_covariance.noalias() += delta * delta.transpose();
+            }
+            sample_covariance /= static_cast<double>(cluster.size() - 1);
         }
 
-        centroids.emplace_back((min_point + max_point) * 0.5);
-        const Eigen::Vector3d raw_bbox = max_point - min_point;
-        bboxes.emplace_back(Eigen::Vector3d::Constant(raw_bbox.maxCoeff()));
+        ClusterDetection detection;
+        detection.centroid            = centroid;
+        detection.bbox                = raw_bbox;
+        detection.bbox_center_offset  = 0.5 * (min_point + max_point) - centroid;
+        detection.centroid_covariance = sample_covariance / static_cast<double>(cluster.size());
+        detection.centroid_covariance.diagonal().array() += noise_variance;
+        detection.point_count = cluster.size();
+        detections.push_back(detection);
     }
+    return detections;
 }
 
-void ObstacleTracker::generatePredictions(
-        const std::vector<Cluster>& clusters,
-        double                      current_time_sec,
-        TrackingResult&             result)
+void ObstacleTracker::generatePredictions(double current_time_sec, TrackingResult& result)
 {
     std::unordered_set<int> current_marker_ids;
 
-    for (const auto& cluster : clusters) {
-        const auto&            ekf              = cluster.ekf_state;
-        const auto&            history          = ekf.position_history;
-        const Eigen::Vector3d& current_position = cluster.centroid;
+    for (const auto& ekf : ekf_states_) {
+        if (!ekf.confirmed)
+            continue;
+
+        const auto&           history          = ekf.position_history;
+        const Eigen::Vector3d current_position = outputPosition(ekf);
 
         if (static_cast<int>(history.size()) < params_.min_observations_for_prediction)
             continue;
@@ -454,29 +581,33 @@ void ObstacleTracker::generatePredictions(
     previous_prediction_marker_ids_ = std::move(current_marker_ids);
 }
 
-void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, TrackingResult& result)
+void ObstacleTracker::generateBoxMarkers(TrackingResult& result)
 {
     std::unordered_set<int> current_marker_ids;
 
-    for (const auto& cluster : clusters) {
-        current_marker_ids.insert(cluster.ekf_state.id);
+    for (const auto& state : ekf_states_) {
+        if (!state.confirmed)
+            continue;
 
-        const double cx = cluster.centroid.x();
-        const double cy = cluster.centroid.y();
-        const double cz = cluster.centroid.z();
-        const double hx = std::max(cluster.ekf_state.bbox.x(), 0.05) * 0.5;
-        const double hy = std::max(cluster.ekf_state.bbox.y(), 0.05) * 0.5;
-        const double hz = std::max(cluster.ekf_state.bbox.z(), 0.05) * 0.5;
+        current_marker_ids.insert(state.id);
+
+        const Eigen::Vector3d center = outputPosition(state);
+        const double          cx     = center.x();
+        const double          cy     = center.y();
+        const double          cz     = center.z();
+        const double          hx     = std::max(state.bbox.x(), 0.05) * 0.5;
+        const double          hy     = std::max(state.bbox.y(), 0.05) * 0.5;
+        const double          hz     = std::max(state.bbox.z(), 0.05) * 0.5;
 
         visualization_msgs::msg::Marker wire;
         wire.header.frame_id    = params_.frame_id;
         wire.ns                 = "obstacle_bbox";
-        wire.id                 = cluster.ekf_state.id;
+        wire.id                 = state.id;
         wire.type               = visualization_msgs::msg::Marker::LINE_LIST;
         wire.action             = visualization_msgs::msg::Marker::ADD;
         wire.lifetime           = rclcpp::Duration::from_seconds(0.0);
         wire.scale.x            = 0.06;
-        wire.color              = cluster.ekf_state.color;
+        wire.color              = state.color;
         wire.color.a            = 1.0F;
         wire.pose.orientation.w = 1.0;
         wire.points.reserve(24);
@@ -511,7 +642,7 @@ void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, T
         visualization_msgs::msg::Marker sphere;
         sphere.header.frame_id    = params_.frame_id;
         sphere.ns                 = "obstacle_centroid";
-        sphere.id                 = cluster.ekf_state.id;
+        sphere.id                 = state.id;
         sphere.type               = visualization_msgs::msg::Marker::SPHERE;
         sphere.action             = visualization_msgs::msg::Marker::ADD;
         sphere.lifetime           = rclcpp::Duration::from_seconds(0.0);
@@ -522,7 +653,7 @@ void ObstacleTracker::generateBoxMarkers(const std::vector<Cluster>& clusters, T
         sphere.scale.x            = 0.2;
         sphere.scale.y            = 0.2;
         sphere.scale.z            = 0.2;
-        sphere.color              = cluster.ekf_state.color;
+        sphere.color              = state.color;
         sphere.color.a            = 1.0F;
         result.bbox_markers.markers.push_back(sphere);
     }
@@ -555,13 +686,16 @@ std::vector<TrackedObstacle> ObstacleTracker::getTrackedObstacles() const
     const double velocity_threshold_squared = params_.velocity_threshold * params_.velocity_threshold;
 
     for (const auto& ekf : ekf_states_) {
+        if (!ekf.confirmed)
+            continue;
+
         if (ekf.position_history.size() < static_cast<size_t>(params_.min_observations_for_prediction))
             continue;
 
         if (ekf.x.segment<3>(3).squaredNorm() < velocity_threshold_squared)
             continue;
 
-        result.push_back({ekf.x.head<3>(), ekf.bbox, ekf.id});
+        result.push_back({outputPosition(ekf), ekf.bbox, ekf.id});
     }
     return result;
 }

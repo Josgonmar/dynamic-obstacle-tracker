@@ -139,13 +139,18 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
     if (debug_) {
         RCLCPP_INFO(
                 get_logger(),
-                "Tracker scan: input=%zu finite=%zu candidate_clusters=%zu accepted_clusters=%zu active_tracks=%zu "
-                "predictions=%zu",
+                "Tracker scan: input=%zu finite=%zu downsampled=%zu candidate_clusters=%zu accepted_clusters=%zu "
+                "matched=%zu new=%zu active_tracks=%zu confirmed=%zu coasting=%zu predictions=%zu",
                 result.input_point_count,
                 result.finite_point_count,
+                result.downsampled_point_count,
                 result.candidate_cluster_count,
                 result.accepted_cluster_count,
+                result.matched_track_count,
+                result.new_track_count,
                 result.active_track_count,
+                result.confirmed_track_count,
+                result.coasting_track_count,
                 result.trajectories.size());
         RCLCPP_INFO(
                 get_logger(),
@@ -156,11 +161,16 @@ void DynamicObstacleTrackerNode::cloudCallback(const sensor_msgs::msg::PointClou
                 elapsedMilliseconds(publication_start, publication_end));
         RCLCPP_INFO(
                 get_logger(),
-                "Tracker core timing [ms]: cleanup=%.2f finite_filter=%.2f clustering=%.2f state_update=%.2f "
-                "bbox_markers=%.2f prediction=%.2f total=%.2f",
+                "Tracker core timing [ms]: cleanup=%.2f finite_filter=%.2f downsampling=%.2f clustering=%.2f "
+                "features=%.2f kf_prediction=%.2f association=%.2f state_update=%.2f bbox_markers=%.2f "
+                "prediction=%.2f total=%.2f",
                 result.timings.state_cleanup_ms,
                 result.timings.finite_filter_ms,
+                result.timings.downsampling_ms,
                 result.timings.clustering_ms,
+                result.timings.feature_ms,
+                result.timings.kf_prediction_ms,
+                result.timings.association_ms,
                 result.timings.state_update_ms,
                 result.timings.bbox_markers_ms,
                 result.timings.prediction_ms,

@@ -95,7 +95,7 @@ The detector looks up the configured `frame.sensor_frame`, (`os_sensor` for Oust
 
 The tracker does not transform or relabel its input. It rejects dynamic clouds whose frame differs from `tracking_frame` and advances the EKF using the cloud timestamp.
 
-Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector preprocessing/output assembly, and HMM-MOS ray casting, EDF, belief update, convolution, and segmentation. Set `tracker.debug: true` to report input/cluster/track counts and timings for ROS conversion, clustering, EKF state updates, marker and prediction generation, publication, and the complete callback.
+Set `detector.debug: true` to print per-scan timing breakdowns for ROS conversion/TF/output handling, detector preprocessing/output assembly, and HMM-MOS ray casting, EDF, belief update, convolution, and segmentation. Set `tracker.debug: true` to report point, detection, association, and track-lifecycle counts plus timings for ROS conversion, downsampling, clustering, feature extraction, KF prediction, Hungarian association, state updates, marker and prediction generation, publication, and the complete callback.
 
 ## Dynamic-point detector
 
@@ -123,16 +123,18 @@ The tracker consumes only the dynamic points produced by the detector (or an equ
 
 For each accepted cloud it:
 
-1. Removes non-finite points and uses cilantro radius-neighbour connected components with `cluster_tolerance`, `min_cluster_size`, and `max_cluster_size`.
-2. Computes each component's min/max extent and center. The published obstacle box is deliberately cubic, using the component's largest axis as all three box dimensions, and components larger than `cluster_bbox_cutoff_size` are rejected.
-3. Associates a component with the nearest existing state inside `cluster_tolerance`, or creates a new state when none matches.
-4. Predicts and corrects a nine-state constant-acceleration EKF `[position, velocity, acceleration]`. With `use_adaptive_kf`, its process and measurement covariance estimates are updated from the current innovation; box size is exponentially smoothed.
-5. Keeps unmatched states internally until `time_to_delete_old_obstacles`, but only current accepted components produce boxes and predictions in that scan.
-6. After `min_observations_for_prediction`, publishes a prediction when EKF speed exceeds `cutoff_length_threshold`. Velocity is capped at `max_obstacle_velocity`, and the output trajectory is a constant-velocity piecewise polynomial from the cloud time through `prediction_horizon`.
+1. Removes non-finite points and optionally downsamples them with the cilantro voxel grid configured by `tracker.preprocessing.voxel_size`. A value of zero disables this stage.
+2. Uses cilantro radius-neighbour connected components with `cluster_tolerance`, `min_cluster_size`, and `max_cluster_size`. Cluster sizes refer to the downsampled cloud.
+3. Represents every accepted component by its arithmetic-mean centroid, raw XYZ axis-aligned bounding-box dimensions and center offset, and centroid covariance. The latter is the sample point covariance divided by the cluster size plus the isotropic `centroid_measurement_noise` variance floor. Components larger than `cluster_bbox_cutoff_size` are rejected.
+4. Deletes expired states and predicts every remaining nine-state constant-acceleration KF `[position, velocity, acceleration]` once to the current cloud timestamp.
+5. Constructs the complete track-to-detection squared Mahalanobis cost matrix from predicted position covariance, adaptive measurement covariance, and detection centroid covariance. A pair must pass both `maximum_association_distance`, a hard Euclidean limit that prevents covariance growth from accepting a remote cluster, and `mahalanobis_gate_squared`. A rectangular Hungarian solve then produces a global one-to-one assignment.
+6. Corrects matched states, creates tentative states for unmatched detections, and increments the miss count of unmatched tracks. A tentative track becomes confirmed after `confirmation_hits`; it is removed after `tentative_max_missed_scans`, while a confirmed track is predicted and published for up to `time_to_delete_old_obstacles` seconds without a measurement.
+7. With `use_adaptive_kf`, process and measurement covariance estimates are updated from the current innovation. Raw box dimensions and the offset between the mean centroid and AABB center are smoothed separately. Internal velocity and acceleration are bounded by `max_obstacle_velocity` and `max_obstacle_acceleration` before they can drive a coast.
+8. After `min_observations_for_prediction`, publishes a prediction when KF speed exceeds `cutoff_length_threshold`. Velocity is capped at `max_obstacle_velocity`, and the output trajectory is a constant-velocity piecewise polynomial from the current cloud time through `prediction_horizon`.
 
-Bounding-box and centroid markers use the EKF track ID. Prediction markers are arrows from the current cluster center to the predicted position at the end of `prediction_horizon`, so arrow direction shows velocity direction and arrow length shows predicted displacement.
+Bounding-box and centroid markers use the KF track ID. A matched track is anchored to the current observed AABB center so its box remains on the detected obstacle; an unmatched track uses the KF centroid plus the smoothed AABB-center offset while coasting. Prediction arrows start at that same output position and end at the predicted position after `prediction_horizon`, so arrow direction shows velocity direction and arrow length shows predicted displacement.
 
-The trajectory topic contains one `DynamicObstacleTrajectory` message per eligible obstacle rather than an array. Its position, cubic bounding box, covariance diagonals, polynomial coefficients, and times are all expressed in `tracking_frame` and stamped with the input cloud time.
+The trajectory topic contains one `DynamicObstacleTrajectory` message per eligible confirmed obstacle rather than an array. Its filtered position, smoothed raw XYZ bounding box, covariance diagonals, polynomial coefficients, and times are all expressed in `tracking_frame` and stamped with the input cloud time. Confirmed tracks continue to produce markers and, when velocity-eligible, predictions while coasting; tentative tracks are NOT published.
 
 ## Attribution and disclaimer
 

@@ -126,12 +126,14 @@ class ConfigLoader
         if (!root || !root.IsMap())
             throw std::runtime_error("The dynamic obstacle tracker config must contain a YAML map at its root");
 
-        const YAML::Node topics     = config_loader_detail::readSection(root, "topics");
-        const YAML::Node frame      = config_loader_detail::readSection(root, "frame");
-        const YAML::Node tracker    = config_loader_detail::readSection(root, "tracker");
-        const YAML::Node clustering = config_loader_detail::readSection(tracker, "clustering");
-        const YAML::Node tracking   = config_loader_detail::readSection(tracker, "tracking");
-        const YAML::Node prediction = config_loader_detail::readSection(tracker, "prediction");
+        const YAML::Node topics        = config_loader_detail::readSection(root, "topics");
+        const YAML::Node frame         = config_loader_detail::readSection(root, "frame");
+        const YAML::Node tracker       = config_loader_detail::readSection(root, "tracker");
+        const YAML::Node preprocessing = config_loader_detail::readSection(tracker, "preprocessing");
+        const YAML::Node clustering    = config_loader_detail::readSection(tracker, "clustering");
+        const YAML::Node association   = config_loader_detail::readSection(tracker, "association");
+        const YAML::Node tracking      = config_loader_detail::readSection(tracker, "tracking");
+        const YAML::Node prediction    = config_loader_detail::readSection(tracker, "prediction");
 
         DynamicObstacleTrackerConfig config;
         config.dynamic_cloud_topic
@@ -140,6 +142,8 @@ class ConfigLoader
         config.debug          = config_loader_detail::readValue(tracker, "debug", config.debug);
 
         auto& params = config.tracker_params;
+        params.tracking_voxel_size
+                = config_loader_detail::readValue(preprocessing, "voxel_size", params.tracking_voxel_size);
         params.cluster_tolerance
                 = config_loader_detail::readValue(clustering, "cluster_tolerance", params.cluster_tolerance);
         params.min_cluster_size
@@ -148,25 +152,31 @@ class ConfigLoader
                 = config_loader_detail::readValue(clustering, "max_cluster_size", params.max_cluster_size);
         params.cluster_bbox_cutoff_size = config_loader_detail::readValue(
                 clustering, "cluster_bbox_cutoff_size", params.cluster_bbox_cutoff_size);
+        params.centroid_measurement_noise = config_loader_detail::readValue(
+                association, "centroid_measurement_noise", params.centroid_measurement_noise);
+        params.mahalanobis_gate_squared = config_loader_detail::readValue(
+                association, "mahalanobis_gate_squared", params.mahalanobis_gate_squared);
+        params.maximum_association_distance = config_loader_detail::readValue(
+                association, "maximum_association_distance", params.maximum_association_distance);
         params.use_adaptive_kf = config_loader_detail::readValue(tracking, "use_adaptive_kf", params.use_adaptive_kf);
         params.adaptive_kf_alpha
                 = config_loader_detail::readValue(tracking, "adaptive_kf_alpha", params.adaptive_kf_alpha);
-        params.adaptive_kf_dt = config_loader_detail::readValue(tracking, "adaptive_kf_dt", params.adaptive_kf_dt);
         params.time_to_delete_old_obstacles = config_loader_detail::readValue(
                 tracking, "time_to_delete_old_obstacles", params.time_to_delete_old_obstacles);
         params.velocity_threshold
                 = config_loader_detail::readValue(tracking, "velocity_threshold", params.velocity_threshold);
-        params.acceleration_threshold
-                = config_loader_detail::readValue(tracking, "acceleration_threshold", params.acceleration_threshold);
         params.max_history_size
                 = config_loader_detail::readValue(tracking, "max_history_size", params.max_history_size);
+        params.confirmation_hits
+                = config_loader_detail::readValue(tracking, "confirmation_hits", params.confirmation_hits);
+        params.tentative_max_missed_scans = config_loader_detail::readValue(
+                tracking, "tentative_max_missed_scans", params.tentative_max_missed_scans);
+        params.max_obstacle_acceleration = config_loader_detail::readValue(
+                tracking, "max_obstacle_acceleration", params.max_obstacle_acceleration);
         params.prediction_horizon
                 = config_loader_detail::readValue(prediction, "prediction_horizon", params.prediction_horizon);
-        params.prediction_dt = config_loader_detail::readValue(prediction, "prediction_dt", params.prediction_dt);
         params.cutoff_length_threshold = config_loader_detail::readValue(
                 prediction, "cutoff_length_threshold", params.cutoff_length_threshold);
-        params.degree_for_pwp  = config_loader_detail::readValue(prediction, "degree_for_pwp", params.degree_for_pwp);
-        params.degree_for_poly = config_loader_detail::readValue(prediction, "degree_for_poly", params.degree_for_poly);
         params.min_observations_for_prediction = config_loader_detail::readValue(
                 prediction, "min_observations_for_prediction", params.min_observations_for_prediction);
         params.max_obstacle_velocity
