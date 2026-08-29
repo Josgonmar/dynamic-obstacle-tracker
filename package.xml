@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>Standalone ROS 2 dynamic-point detection, obstacle tracking, and trajectory prediction.</description>
 
-  <maintainer email="jmgonzalez@catec.aero">José Manuel González Marín</maintainer>
+  <maintainer email="jmgonzalez@catec.aero">Josgonmar</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
